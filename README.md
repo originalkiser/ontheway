@@ -80,6 +80,24 @@ The whole point of the app is: **plan once, track locally, forever.**
    yourself once you have network access to `services.gradle.org`.
 3. Run on a device or emulator with Google Play services and location enabled.
 
+## Continuous Integration (downloadable APK without a local SDK)
+
+`.github/workflows/android-build.yml` builds a debug APK on every push/PR using GitHub-hosted
+runners, which have unrestricted network access to Google's Maven repos (unlike this sandbox).
+It:
+
+1. Installs JDK 17 and the Android SDK (`android-actions/setup-android`).
+2. Writes `local.properties` with `sdk.dir` and `MAPS_API_KEY` (pulled from the `MAPS_API_KEY`
+   repository secret if you add one under **Settings → Secrets and variables → Actions**;
+   otherwise it falls back to the placeholder, which builds fine but won't actually load maps).
+3. Runs `gradle assembleDebug` and `gradle testDebugUnitTest` via `gradle/actions/setup-gradle`
+   (pinned to Gradle 8.7) - no committed wrapper jar required.
+4. Uploads `app-debug.apk` as a workflow artifact.
+
+To get the file: push this branch (or trigger the workflow manually via **Actions → Android
+Build → Run workflow**), open the finished run, and download `rest-stop-countdown-debug-apk`
+from the **Artifacts** section at the bottom of the run summary page.
+
 ## Known limitations / things to verify before shipping
 
 - **This project was authored and reviewed for correctness, but not compiled**, in an
