@@ -2,7 +2,19 @@
 # sdk.dir is normally written automatically by Android Studio the first time you open the project.
 sdk.dir=/path/to/Android/sdk
 
-# A single Google Cloud API key with the Maps SDK for Android, Directions API, and
-# Places API (New) enabled. Restrict it to your app's package name + SHA-1 fingerprint
-# in the Google Cloud Console before shipping.
-MAPS_API_KEY=YOUR_API_KEY_HERE
+# Two separate keys are required - an "Android apps" restriction only authenticates calls made
+# through Google's own client libraries (like the Maps SDK's tile requests). It CANNOT
+# authenticate a raw HTTPS call your own code makes (e.g. via Retrofit), which always looks like
+# an anonymous request with no Referer header and gets rejected. See README.md for full setup
+# steps.
+
+# Key 1: Maps SDK for Android only. Restrict this one to Android apps (package name
+# com.reststop.countdown + your debug/release SHA-1) and to just the Maps SDK for Android API.
+MAPS_API_KEY=YOUR_MAPS_SDK_KEY_HERE
+
+# Key 2: Directions API + Places API (New), called directly over HTTPS via Retrofit. Restrict
+# this one to those two APIs only, with Application restriction set to "None" (an Android
+# restriction won't work here - see above). Optionally set a daily quota cap in Cloud Console
+# to bound worst-case cost/abuse exposure. Falls back to MAPS_API_KEY if left unset, but that
+# will fail with "not authorized ... empty referer" if MAPS_API_KEY is Android-restricted.
+PLACES_API_KEY=YOUR_PLACES_REST_KEY_HERE

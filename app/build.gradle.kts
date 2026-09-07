@@ -15,6 +15,13 @@ val localProperties = Properties().apply {
     }
 }
 val mapsApiKey: String = localProperties.getProperty("MAPS_API_KEY") ?: "YOUR_API_KEY_HERE"
+// A second, separately-restricted key for the Directions/Places REST calls made directly over
+// HTTPS (via Retrofit). An "Android apps" restriction only authenticates calls made through
+// Google's own client libraries (e.g. the Maps SDK's tile requests) - it can't authenticate a
+// raw HTTP call, which always looks like an anonymous request with no Referer header. So this
+// key must be restricted by API only (Directions API, Places API (New)), not by Android app.
+// Falls back to MAPS_API_KEY if unset, so existing single-key setups keep working.
+val placesApiKey: String = localProperties.getProperty("PLACES_API_KEY") ?: mapsApiKey
 
 android {
     namespace = "com.reststop.countdown"
@@ -29,8 +36,9 @@ android {
 
         // Exposed to AndroidManifest.xml via ${MAPS_API_KEY}
         manifestPlaceholders["MAPS_API_KEY"] = mapsApiKey
-        // Exposed to Kotlin code (Retrofit headers for the Places API) via BuildConfig.
+        // Exposed to Kotlin code via BuildConfig for the Retrofit clients.
         buildConfigField("String", "MAPS_API_KEY", "\"$mapsApiKey\"")
+        buildConfigField("String", "PLACES_API_KEY", "\"$placesApiKey\"")
     }
 
     // A committed (non-secret) debug keystore so every debug build - local or CI - is signed

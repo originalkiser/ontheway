@@ -1,14 +1,17 @@
 package com.reststop.countdown.data.repository
 
 import com.reststop.countdown.data.model.GeoPoint
+import com.reststop.countdown.data.model.PlaceSuggestion
 import com.reststop.countdown.data.model.PoiCategory
 import com.reststop.countdown.data.model.PointOfInterest
 import com.reststop.countdown.data.model.RestStop
 import com.reststop.countdown.data.model.RouteInfo
 import com.reststop.countdown.data.remote.DirectionsApiService
 import com.reststop.countdown.data.remote.PlacesApiService
+import com.reststop.countdown.data.remote.dto.AutocompleteRequestDto
 import com.reststop.countdown.data.remote.dto.CircleDto
 import com.reststop.countdown.data.remote.dto.LatLngDto
+import com.reststop.countdown.data.remote.dto.LocationBiasDto
 import com.reststop.countdown.data.remote.dto.LocationRestrictionDto
 import com.reststop.countdown.data.remote.dto.NearbySearchRequestDto
 import com.reststop.countdown.data.remote.dto.PlaceDto
@@ -36,22 +39,55 @@ class TripRepositoryImpl(
     private val searchRadiusMeters: Double = 25_000.0,
 ) : TripRepository {
 
-    override suspend fun fetchRoute(origin: GeoPoint, destinationQuery: String): Result<RouteInfo> = runCatching {
+    override suspend fun autocomplete(query: String, locationBias: GeoPoint?): Result<List<PlaceSuggestion>> = runCatching {
+        if (query.isBlank()) return@runCatching emptyList()
+
+        val bias = locationBias?.let {
+            LocationBiasDto(circle = CircleDto(center = LatLngDto(it.latitude, it.longitude), radiusMeters = 50_000.0))
+        }
+        placesApi.autocomplete(apiKey = apiKey, request = AutocompleteRequestDto(input = query, locationBias = bias))
+            .suggestions
+            .mapNotNull { it.placePrediction }
+            .map { prediction ->
+                PlaceSuggestion(
+                    placeId = prediction.placeId,
+                    primaryText = prediction.structuredFormat?.mainText?.text
+                        ?: prediction.text?.text
+                        ?: prediction.placeId,
+                    secondaryText = prediction.structuredFormat?.secondaryText?.text.orEmpty(),
+                )
+            }
+    }
+
+    override suspend fun fetchRoute(
+        origin: GeoPoint,
+        destinationQuery: String,
+        destinationPlaceId: String?,
+    ): Result<List<RouteInfo>> = runCatching {
+        // A place_id destination is exact (works for business/landmark names); falls back to
+        // geocoding the raw text when the user just typed and hit "Start Trip" without picking
+        // a suggestion.
+        val destination = destinationPlaceId?.let { "place_id:$it" } ?: destinationQuery
+
         val response = directionsApi.getDirections(
             origin = "${origin.latitude},${origin.longitude}",
-            destination = destinationQuery,
+            destination = destination,
             apiKey = apiKey,
         )
-        val route = response.routes.firstOrNull()
-            ?: error(response.errorMessage ?: "No route found for \"$destinationQuery\" (status ${response.status})")
-        val leg = route.legs.firstOrNull() ?: error("Route had no legs")
+        if (response.routes.isEmpty()) {
+            error(response.errorMessage ?: "No route found for \"$destinationQuery\" (status ${response.status})")
+        }
 
-        RouteInfo(
-            polyline = PolylineDecoder.decode(route.overviewPolyline.points),
-            distanceMeters = leg.distance.value,
-            durationSeconds = leg.duration.value,
-            destinationAddress = leg.endAddress,
-        )
+        response.routes.map { route ->
+            val leg = route.legs.firstOrNull() ?: error("Route had no legs")
+            RouteInfo(
+                summary = route.summary.ifBlank { leg.endAddress },
+                polyline = PolylineDecoder.decode(route.overviewPolyline.points),
+                distanceMeters = leg.distance.value,
+                durationSeconds = leg.duration.value,
+                destinationAddress = leg.endAddress,
+            )
+        }
     }
 
     override suspend fun fetchRestStops(routePolyline: List<GeoPoint>): Result<List<RestStop>> = runCatching {

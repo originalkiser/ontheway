@@ -23,7 +23,9 @@ class AppContainer(context: Context) {
         TripRepositoryImpl(
             directionsApi = NetworkModule.directionsApi,
             placesApi = NetworkModule.placesApi,
-            apiKey = BuildConfig.MAPS_API_KEY,
+            // Deliberately NOT BuildConfig.MAPS_API_KEY: that key is Android-app restricted for
+            // the Maps SDK and will be rejected on these raw REST calls. See build.gradle.kts.
+            apiKey = BuildConfig.PLACES_API_KEY,
         )
     }
 }

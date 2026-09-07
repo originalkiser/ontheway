@@ -42,6 +42,7 @@ import com.reststop.countdown.ui.MainViewModel
 import com.reststop.countdown.ui.components.DestinationInputBar
 import com.reststop.countdown.ui.components.NextRestStopCard
 import com.reststop.countdown.ui.components.PoiPanel
+import com.reststop.countdown.ui.components.RouteOptionsCard
 import com.reststop.countdown.ui.toBounds
 import com.reststop.countdown.ui.toLatLng
 
@@ -51,6 +52,15 @@ fun MapScreen(viewModel: MainViewModel) {
 
     val cameraPositionState = rememberCameraPositionState()
     var followMode by remember { mutableStateOf(true) }
+
+    // Center on the driver's current location as soon as it's known, before any trip starts -
+    // otherwise the map sits on (0,0). Runs once: initialCameraTarget is only ever set once.
+    LaunchedEffect(uiState.initialCameraTarget) {
+        val target = uiState.initialCameraTarget
+        if (target != null && !uiState.tripActive) {
+            cameraPositionState.animate(CameraUpdateFactory.newLatLngZoom(target.toLatLng(), 14f))
+        }
+    }
 
     // Fit the whole route on screen exactly once, right after the one-time Directions fetch.
     LaunchedEffect(uiState.routePolyline) {
@@ -114,12 +124,20 @@ fun MapScreen(viewModel: MainViewModel) {
                     )
                 }
 
-                if (!uiState.tripActive) {
+                if (uiState.awaitingRouteSelection) {
+                    RouteOptionsCard(
+                        routes = uiState.routeOptions,
+                        distanceUnit = uiState.distanceUnit,
+                        onSelectRoute = viewModel::selectRoute,
+                    )
+                } else if (!uiState.tripActive) {
                     DestinationInputBar(
                         destination = uiState.destinationInput,
+                        suggestions = uiState.destinationSuggestions,
                         isLoading = uiState.isLoadingTrip,
                         errorMessage = uiState.errorMessage,
                         onDestinationChanged = viewModel::onDestinationChanged,
+                        onSuggestionSelected = viewModel::selectSuggestion,
                         onStartTrip = viewModel::startTrip,
                     )
                 } else {

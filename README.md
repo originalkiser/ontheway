@@ -70,11 +70,20 @@ The whole point of the app is: **plan once, track locally, forever.**
 
 ## Setup
 
+This app needs **two separate API keys**, because Google's "Android apps" key restriction only
+authenticates calls made through Google's own client libraries (the Maps SDK for Android embeds
+your app's identity when it fetches tiles). It does **not** authenticate a raw HTTPS call your
+own code makes - like this app's Retrofit calls to the Directions and Places REST endpoints,
+which arrive at Google looking like an anonymous request with no `Referer` header and get
+rejected ("not authorized ... empty referer"). So:
+
 1. Copy `local.properties.template` to `local.properties` and set:
    - `sdk.dir` (Android Studio fills this in automatically on first open)
-   - `MAPS_API_KEY` - a Google Cloud API key with **Maps SDK for Android**, **Directions API**,
-     and **Places API (New)** enabled. Restrict it to Android apps using the package name
-     `com.reststop.countdown` and the SHA-1 below, and restrict its APIs to just those three.
+   - `MAPS_API_KEY` - used only for the Maps SDK for Android (the `<meta-data>` in
+     `AndroidManifest.xml`). In the Cloud Console, restrict it:
+     - **Application restrictions → Android apps** → package name `com.reststop.countdown` +
+       the SHA-1 below.
+     - **API restrictions** → Maps SDK for Android only.
 
      `app/debug.keystore` is committed to the repo (it's a non-secret, dev-only key - never used
      for release signing) and wired into `app/build.gradle.kts` as the signing config for every
@@ -90,6 +99,18 @@ The whole point of the app is: **plan once, track locally, forever.**
      ```
      A release build needs its own separate, private keystore and a different SHA-1 registered
      against the key restriction - never reuse the debug key for release signing.
+
+   - `PLACES_API_KEY` - a **second** key used only for the Directions API, Places API (New), and
+     Places Autocomplete (New) calls made directly via Retrofit. Restrict it:
+     - **Application restrictions → None** (an Android restriction can't authenticate these raw
+       REST calls - see above; IP restriction doesn't work either, since mobile client IPs are
+       unpredictable).
+     - **API restrictions** → Directions API + Places API (New) only.
+     - To bound the risk of this key being extracted from the APK (any client-embedded key can
+       be), set a daily quota cap under **APIs & Services → Quotas** for those two APIs.
+     - Falls back to `MAPS_API_KEY` if left unset, purely so older single-key setups still
+       build - but that fails at runtime if `MAPS_API_KEY` is Android-restricted, so set this
+       explicitly.
 2. Open the project in Android Studio (Koala+ recommended). It will offer to generate the
    Gradle wrapper jar automatically; alternatively run `gradle wrapper --gradle-version 8.7`
    yourself once you have network access to `services.gradle.org`.
@@ -102,9 +123,10 @@ runners, which have unrestricted network access to Google's Maven repos (unlike 
 It:
 
 1. Installs JDK 17 and the Android SDK (`android-actions/setup-android`).
-2. Writes `local.properties` with `sdk.dir` and `MAPS_API_KEY` (pulled from the `MAPS_API_KEY`
-   repository secret if you add one under **Settings → Secrets and variables → Actions**;
-   otherwise it falls back to the placeholder, which builds fine but won't actually load maps).
+2. Writes `local.properties` with `sdk.dir`, `MAPS_API_KEY`, and `PLACES_API_KEY` - each pulled
+   from a same-named repository secret if you add one under **Settings → Secrets and variables →
+   Actions**; otherwise they fall back to a placeholder, which builds fine but won't actually
+   load maps or fetch routes.
 3. Runs `gradle assembleDebug` and `gradle testDebugUnitTest` via `gradle/actions/setup-gradle`
    (pinned to Gradle 8.7) - no committed wrapper jar required.
 4. Uploads `app-debug.apk` as a workflow artifact.

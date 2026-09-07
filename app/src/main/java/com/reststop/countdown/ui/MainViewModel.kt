@@ -5,13 +5,16 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.reststop.countdown.data.model.GeoPoint
+import com.reststop.countdown.data.model.PlaceSuggestion
 import com.reststop.countdown.data.model.PoiCategory
 import com.reststop.countdown.data.model.PointOfInterest
 import com.reststop.countdown.data.model.RestStop
+import com.reststop.countdown.data.model.RouteInfo
 import com.reststop.countdown.domain.repository.TripRepository
 import com.reststop.countdown.domain.util.RoutePolylineIndex
 import com.reststop.countdown.location.LocationTracker
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -22,9 +25,11 @@ import kotlinx.coroutines.launch
 
 /**
  * Owns the whole trip lifecycle:
- *  1. [startTrip] makes the one-and-only Directions + Places API calls for the trip.
- *  2. [beginLocationUpdates] then drives everything else purely off local GPS fixes -
- *     no further network calls happen until (if ever) a brand new trip is started.
+ *  1. [onDestinationChanged] debounces destination-search autocomplete as the user types.
+ *  2. [startTrip] fetches route alternatives; [selectRoute] (or auto-selection when there's only
+ *     one) then makes the one-and-only Places sweep for rest stops.
+ *  3. [beginLocationUpdates] then drives everything else purely off local GPS fixes - no further
+ *     network calls happen until (if ever) a brand new trip is started.
  */
 class MainViewModel(
     private val tripRepository: TripRepository,
@@ -40,6 +45,9 @@ class MainViewModel(
 
         /** Only surface a POI as "upcoming" once it's within this many meters of the drive. */
         private const val UPCOMING_POI_MAX_LATERAL_METERS = 3_000.0
+
+        /** Debounce so autocomplete doesn't fire a request on every single keystroke. */
+        private const val AUTOCOMPLETE_DEBOUNCE_MILLIS = 300L
     }
 
     private val _uiState = MutableStateFlow(TripUiState())
@@ -48,13 +56,59 @@ class MainViewModel(
     private var routeIndex: RoutePolylineIndex? = null
     private val restStopQueue = ArrayDeque<RestStop>()
     private var locationJob: Job? = null
+    private var suggestionsJob: Job? = null
+    private var pendingOrigin: GeoPoint? = null
 
     fun onPermissionResult(granted: Boolean) {
+        val wasGranted = _uiState.value.hasLocationPermission
         _uiState.update { it.copy(hasLocationPermission = granted) }
+        if (granted && !wasGranted) {
+            centerMapOnUserLocationOnce()
+        }
+    }
+
+    /** One-shot fix so the map isn't sitting on (0,0) before a trip starts. Never repeated. */
+    private fun centerMapOnUserLocationOnce() {
+        viewModelScope.launch {
+            val location = locationTracker.awaitCurrentLocation() ?: return@launch
+            _uiState.update { it.copy(initialCameraTarget = GeoPoint(location.latitude, location.longitude)) }
+        }
     }
 
     fun onDestinationChanged(text: String) {
-        _uiState.update { it.copy(destinationInput = text, errorMessage = null) }
+        _uiState.update {
+            it.copy(destinationInput = text, selectedDestinationPlaceId = null, errorMessage = null)
+        }
+
+        suggestionsJob?.cancel()
+        if (text.isBlank()) {
+            _uiState.update { it.copy(destinationSuggestions = emptyList()) }
+            return
+        }
+
+        suggestionsJob = viewModelScope.launch {
+            delay(AUTOCOMPLETE_DEBOUNCE_MILLIS)
+            val bias = _uiState.value.currentLocation ?: _uiState.value.initialCameraTarget
+            tripRepository.autocomplete(text, bias)
+                .onSuccess { suggestions -> _uiState.update { it.copy(destinationSuggestions = suggestions) } }
+        }
+    }
+
+    /** User tapped a suggestion instead of typing a raw address - searches by name work too. */
+    fun selectSuggestion(suggestion: PlaceSuggestion) {
+        suggestionsJob?.cancel()
+        val displayText = if (suggestion.secondaryText.isNotBlank()) {
+            "${suggestion.primaryText}, ${suggestion.secondaryText}"
+        } else {
+            suggestion.primaryText
+        }
+        _uiState.update {
+            it.copy(
+                destinationInput = displayText,
+                selectedDestinationPlaceId = suggestion.placeId,
+                destinationSuggestions = emptyList(),
+            )
+        }
     }
 
     fun toggleDistanceUnit() {
@@ -63,7 +117,7 @@ class MainViewModel(
         }
     }
 
-    /** The one-time trip setup: a single Directions call and a single Places sweep. */
+    /** Fetches route alternatives. If there's more than one, waits for [selectRoute]; otherwise proceeds immediately. */
     fun startTrip() {
         val destination = _uiState.value.destinationInput.trim()
         if (destination.isEmpty() || _uiState.value.isLoadingTrip) return
@@ -77,31 +131,54 @@ class MainViewModel(
                 return@launch
             }
             val origin = GeoPoint(currentLocation.latitude, currentLocation.longitude)
+            pendingOrigin = origin
 
-            val route = tripRepository.fetchRoute(origin, destination).getOrElse { throwable ->
-                _uiState.update { it.copy(isLoadingTrip = false, errorMessage = throwable.message ?: "Failed to fetch route.") }
-                return@launch
+            val routes = tripRepository.fetchRoute(origin, destination, _uiState.value.selectedDestinationPlaceId)
+                .getOrElse { throwable ->
+                    _uiState.update { it.copy(isLoadingTrip = false, errorMessage = throwable.message ?: "Failed to fetch route.") }
+                    return@launch
+                }
+
+            if (routes.size == 1) {
+                proceedWithRoute(routes.first(), origin)
+            } else {
+                _uiState.update {
+                    it.copy(isLoadingTrip = false, routeOptions = routes, awaitingRouteSelection = true)
+                }
             }
-
-            routeIndex = RoutePolylineIndex.build(route.polyline)
-
-            val restStops = tripRepository.fetchRestStops(route.polyline).getOrElse { emptyList() }
-            restStopQueue.clear()
-            restStopQueue.addAll(restStops)
-
-            _uiState.update {
-                it.copy(
-                    isLoadingTrip = false,
-                    tripActive = true,
-                    routePolyline = route.polyline,
-                    currentLocation = origin,
-                    upcomingRestStops = restStopQueue.toList(),
-                    nextRestStop = restStopQueue.firstOrNull(),
-                )
-            }
-
-            beginLocationUpdates()
         }
+    }
+
+    /** User picked one of several route alternatives - now do the one-time rest-stop Places sweep and go live. */
+    fun selectRoute(route: RouteInfo) {
+        val origin = pendingOrigin ?: _uiState.value.currentLocation ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoadingTrip = true, awaitingRouteSelection = false, routeOptions = emptyList()) }
+            proceedWithRoute(route, origin)
+        }
+    }
+
+    private suspend fun proceedWithRoute(route: RouteInfo, origin: GeoPoint) {
+        routeIndex = RoutePolylineIndex.build(route.polyline)
+
+        val restStops = tripRepository.fetchRestStops(route.polyline).getOrElse { emptyList() }
+        restStopQueue.clear()
+        restStopQueue.addAll(restStops)
+
+        _uiState.update {
+            it.copy(
+                isLoadingTrip = false,
+                tripActive = true,
+                routeOptions = emptyList(),
+                awaitingRouteSelection = false,
+                routePolyline = route.polyline,
+                currentLocation = origin,
+                upcomingRestStops = restStopQueue.toList(),
+                nextRestStop = restStopQueue.firstOrNull(),
+            )
+        }
+
+        beginLocationUpdates()
     }
 
     /** Toggles a "other places" category checkbox, fetching it once (then caching) if newly checked. */
@@ -144,7 +221,7 @@ class MainViewModel(
 
     /**
      * The real-time countdown loop. Runs entirely on-device against the cached route/rest-stop
-     * data fetched once in [startTrip] - no Directions/Places calls happen here.
+     * data fetched once in [proceedWithRoute] - no Directions/Places calls happen here.
      */
     private fun handleLocationUpdate(location: Location) {
         val index = routeIndex ?: return
@@ -196,6 +273,7 @@ class MainViewModel(
 
     override fun onCleared() {
         locationJob?.cancel()
+        suggestionsJob?.cancel()
     }
 
     class Factory(

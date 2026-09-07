@@ -37,3 +37,37 @@ data class PlaceDto(
 data class DisplayNameDto(
     @SerializedName("text") val text: String,
 )
+
+/** Request body for Places API (New) `places:autocomplete`. */
+data class AutocompleteRequestDto(
+    @SerializedName("input") val input: String,
+    @SerializedName("locationBias") val locationBias: LocationBiasDto? = null,
+)
+
+data class LocationBiasDto(
+    @SerializedName("circle") val circle: CircleDto,
+)
+
+/** Response shape for Places API (New) `places:autocomplete`. */
+data class AutocompleteResponseDto(
+    @SerializedName("suggestions") val suggestions: List<SuggestionDto> = emptyList(),
+)
+
+data class SuggestionDto(
+    @SerializedName("placePrediction") val placePrediction: PlacePredictionDto?,
+)
+
+data class PlacePredictionDto(
+    @SerializedName("placeId") val placeId: String,
+    @SerializedName("text") val text: FormattedTextDto?,
+    @SerializedName("structuredFormat") val structuredFormat: StructuredFormatDto?,
+)
+
+data class StructuredFormatDto(
+    @SerializedName("mainText") val mainText: FormattedTextDto?,
+    @SerializedName("secondaryText") val secondaryText: FormattedTextDto?,
+)
+
+data class FormattedTextDto(
+    @SerializedName("text") val text: String,
+)

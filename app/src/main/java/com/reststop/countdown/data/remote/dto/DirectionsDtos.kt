@@ -10,6 +10,7 @@ data class DirectionsResponseDto(
 )
 
 data class RouteDto(
+    @SerializedName("summary") val summary: String = "",
     @SerializedName("overview_polyline") val overviewPolyline: OverviewPolylineDto,
     @SerializedName("legs") val legs: List<LegDto> = emptyList(),
 )

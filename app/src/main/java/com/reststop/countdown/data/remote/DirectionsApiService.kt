@@ -12,5 +12,6 @@ interface DirectionsApiService {
         @Query("origin") origin: String,
         @Query("destination") destination: String,
         @Query("key") apiKey: String,
+        @Query("alternatives") alternatives: Boolean = true,
     ): DirectionsResponseDto
 }

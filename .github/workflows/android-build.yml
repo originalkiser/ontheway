@@ -27,6 +27,7 @@ jobs:
         run: |
           echo "sdk.dir=$ANDROID_HOME" >> local.properties
           echo "MAPS_API_KEY=${{ secrets.MAPS_API_KEY || 'YOUR_API_KEY_HERE' }}" >> local.properties
+          echo "PLACES_API_KEY=${{ secrets.PLACES_API_KEY || secrets.MAPS_API_KEY || 'YOUR_API_KEY_HERE' }}" >> local.properties
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
