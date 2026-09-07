@@ -73,8 +73,23 @@ The whole point of the app is: **plan once, track locally, forever.**
 1. Copy `local.properties.template` to `local.properties` and set:
    - `sdk.dir` (Android Studio fills this in automatically on first open)
    - `MAPS_API_KEY` - a Google Cloud API key with **Maps SDK for Android**, **Directions API**,
-     and **Places API (New)** enabled. Restrict it (package name + SHA-1, and API restrictions)
-     before shipping - see the Google Cloud Console credentials page.
+     and **Places API (New)** enabled. Restrict it to Android apps using the package name
+     `com.reststop.countdown` and the SHA-1 below, and restrict its APIs to just those three.
+
+     `app/debug.keystore` is committed to the repo (it's a non-secret, dev-only key - never used
+     for release signing) and wired into `app/build.gradle.kts` as the signing config for every
+     debug build, local or CI, so its SHA-1 never changes:
+
+     ```
+     SHA1: E9:4E:92:97:FF:16:3C:DC:28:37:C1:9C:45:C4:7A:95:CC:FF:F8:4B
+     ```
+
+     Verify it yourself anytime with:
+     ```
+     keytool -list -v -keystore app/debug.keystore -alias androiddebugkey -storepass android -keypass android
+     ```
+     A release build needs its own separate, private keystore and a different SHA-1 registered
+     against the key restriction - never reuse the debug key for release signing.
 2. Open the project in Android Studio (Koala+ recommended). It will offer to generate the
    Gradle wrapper jar automatically; alternatively run `gradle wrapper --gradle-version 8.7`
    yourself once you have network access to `services.gradle.org`.

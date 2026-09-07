@@ -33,6 +33,18 @@ android {
         buildConfigField("String", "MAPS_API_KEY", "\"$mapsApiKey\"")
     }
 
+    // A committed (non-secret) debug keystore so every debug build - local or CI - is signed
+    // with the same key. Without this, each machine/CI runner gets its own auto-generated
+    // debug key with a different SHA-1, which breaks an Android-restricted Maps API key.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -40,6 +52,7 @@ android {
         }
         debug {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
