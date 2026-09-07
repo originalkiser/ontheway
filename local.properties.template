@@ -1,0 +1,8 @@
+# Copy this file to "local.properties" (which is git-ignored) and fill in real values.
+# sdk.dir is normally written automatically by Android Studio the first time you open the project.
+sdk.dir=/path/to/Android/sdk
+
+# A single Google Cloud API key with the Maps SDK for Android, Directions API, and
+# Places API (New) enabled. Restrict it to your app's package name + SHA-1 fingerprint
+# in the Google Cloud Console before shipping.
+MAPS_API_KEY=YOUR_API_KEY_HERE
