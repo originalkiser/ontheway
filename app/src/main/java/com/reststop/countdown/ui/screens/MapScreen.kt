@@ -31,6 +31,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.google.android.gms.maps.CameraUpdateFactory
@@ -53,9 +54,12 @@ import com.reststop.countdown.ui.components.RouteOptionsCard
 import com.reststop.countdown.ui.components.SecondaryDestinationBanner
 import com.reststop.countdown.ui.components.TripSummaryBar
 import com.reststop.countdown.ui.components.TurnByTurnBanner
+import com.reststop.countdown.ui.numberedBitmapDescriptor
 import com.reststop.countdown.ui.poiCategoryMarkerHue
+import com.reststop.countdown.ui.routeOptionColor
 import com.reststop.countdown.ui.toBounds
 import com.reststop.countdown.ui.toLatLng
+import com.reststop.countdown.ui.vectorBitmapDescriptor
 import kotlinx.coroutines.launch
 
 private const val OVERVIEW_ZOOM = 15f
@@ -69,7 +73,13 @@ fun MapScreen(viewModel: MainViewModel) {
 
     val cameraPositionState = rememberCameraPositionState()
     val coroutineScope = rememberCoroutineScope()
+    val context = LocalContext.current
     var followMode by remember { mutableStateOf(true) }
+
+    // Rasterized once and reused - BitmapDescriptorFactory.fromResource() can't decode a vector
+    // drawable (it uses BitmapFactory.decodeResource under the hood, raster formats only), so the
+    // arrow is drawn onto a real Bitmap ourselves first.
+    val navPuckIcon = remember(context) { vectorBitmapDescriptor(context, R.drawable.ic_nav_arrow) }
 
     // Center on the driver's current location as soon as it's known, before any trip starts -
     // otherwise the map sits on (0,0). Runs once: initialCameraTarget is only ever set once.
@@ -137,6 +147,25 @@ fun MapScreen(viewModel: MainViewModel) {
                 Polyline(points = points, color = ROUTE_COLOR, width = 14f, zIndex = 2f)
             }
 
+            // Route alternatives, drawn and numbered right on the map (not just the picker's
+            // small preview thumbnails) so the driver can see where each one actually goes.
+            if (uiState.awaitingRouteSelection) {
+                uiState.routeOptions.forEachIndexed { index, route ->
+                    val color = routeOptionColor(index)
+                    val points = route.polyline.map { it.toLatLng() }
+                    Polyline(points = points, color = Color.White, width = 12f, zIndex = 1f)
+                    Polyline(points = points, color = color, width = 6f, zIndex = 2f)
+                    val midpoint = route.polyline.getOrNull(route.polyline.size / 2)
+                    if (midpoint != null) {
+                        Marker(
+                            state = MarkerState(position = midpoint.toLatLng()),
+                            icon = numberedBitmapDescriptor(index + 1, color),
+                            anchor = Offset(0.5f, 0.5f),
+                        )
+                    }
+                }
+            }
+
             uiState.visiblePois.forEach { poi ->
                 Marker(
                     state = MarkerState(position = poi.location.toLatLng()),
@@ -162,7 +191,7 @@ fun MapScreen(viewModel: MainViewModel) {
             if (showNavPuck) {
                 Marker(
                     state = MarkerState(position = uiState.currentLocation!!.toLatLng()),
-                    icon = BitmapDescriptorFactory.fromResource(R.drawable.ic_nav_arrow),
+                    icon = navPuckIcon,
                     rotation = uiState.currentBearingDegrees,
                     flat = true,
                     anchor = Offset(0.5f, 0.5f),

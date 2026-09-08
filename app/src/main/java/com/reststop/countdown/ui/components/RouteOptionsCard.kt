@@ -3,17 +3,20 @@ package com.reststop.countdown.ui.components
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.foundation.background
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -22,13 +25,19 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.reststop.countdown.data.model.GeoPoint
 import com.reststop.countdown.data.model.RouteInfo
 import com.reststop.countdown.ui.DistanceUnit
 import com.reststop.countdown.ui.formatDistance
+import com.reststop.countdown.ui.routeOptionColor
 import java.util.concurrent.TimeUnit
 
-/** Shown when the Directions API returns more than one route - the driver picks before rest-stop search runs. */
+/**
+ * Shown when the Directions API returns more than one route - the driver picks before rest-area
+ * search runs. Each route is numbered and colored to match the same route drawn on the map
+ * itself (see MapScreen), not just the small preview thumbnail here.
+ */
 @Composable
 fun RouteOptionsCard(
     routes: List<RouteInfo>,
@@ -44,6 +53,7 @@ fun RouteOptionsCard(
             Text(text = "Choose a route", style = MaterialTheme.typography.titleMedium)
             routes.forEachIndexed { index, route ->
                 if (index > 0) HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                val color = routeOptionColor(index)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -52,11 +62,20 @@ fun RouteOptionsCard(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    Box(
+                        modifier = Modifier
+                            .size(24.dp)
+                            .background(color = color, shape = CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(text = "${index + 1}", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    }
                     RoutePreviewShape(
                         polyline = route.polyline,
+                        routeColor = color,
                         modifier = Modifier
-                            .size(width = 64.dp, height = 48.dp)
-                            .padding(end = 12.dp),
+                            .padding(start = 8.dp, end = 12.dp)
+                            .size(width = 64.dp, height = 48.dp),
                     )
                     Column(modifier = Modifier.weight(1f)) {
                         Text(text = route.summary, fontWeight = FontWeight.Bold)
@@ -78,8 +97,7 @@ fun RouteOptionsCard(
  * normalized to fit the box, the same way ride-share apps preview a route choice.
  */
 @Composable
-private fun RoutePreviewShape(polyline: List<GeoPoint>, modifier: Modifier = Modifier) {
-    val routeColor = MaterialTheme.colorScheme.primary
+private fun RoutePreviewShape(polyline: List<GeoPoint>, routeColor: Color, modifier: Modifier = Modifier) {
     val startColor = Color(0xFF34A853)
     val endColor = Color(0xFFEA4335)
 
