@@ -275,18 +275,20 @@ class MainViewModel(
         }
 
         val waypoints = try {
-            buildList {
-                waypoint?.let { add(Waypoint.builder().setPlaceId(it.placeId).setTitle(it.name).build()) }
-                val destinationBuilder = Waypoint.builder().setTitle(route.destinationAddress)
-                val placeId = originalDestinationPlaceId
-                if (placeId != null) {
-                    destinationBuilder.setPlaceId(placeId)
-                } else {
-                    val destinationPoint = route.polyline.last()
-                    destinationBuilder.setLatLng(destinationPoint.latitude, destinationPoint.longitude)
-                }
-                add(destinationBuilder.build())
+            val list = mutableListOf<Waypoint>()
+            if (waypoint != null) {
+                list += Waypoint.builder().setPlaceIdString(waypoint.placeId).setTitle(waypoint.name).build()
             }
+            val destinationBuilder = Waypoint.builder().setTitle(route.destinationAddress)
+            val placeId = originalDestinationPlaceId
+            if (placeId != null) {
+                destinationBuilder.setPlaceIdString(placeId)
+            } else {
+                val destinationPoint = route.polyline.last()
+                destinationBuilder.setLatLng(destinationPoint.latitude, destinationPoint.longitude)
+            }
+            list += destinationBuilder.build()
+            list
         } catch (throwable: Exception) {
             _uiState.update { it.copy(errorMessage = "Couldn't start turn-by-turn guidance for this destination.") }
             return
