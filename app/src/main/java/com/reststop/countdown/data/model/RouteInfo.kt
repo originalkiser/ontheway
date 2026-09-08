@@ -15,4 +15,6 @@ data class RouteInfo(
     val distanceMeters: Int,
     val durationSeconds: Int,
     val destinationAddress: String,
+    /** Turn-by-turn maneuvers, in route order - drives the driving-mode instruction banner. */
+    val steps: List<RouteStep> = emptyList(),
 )

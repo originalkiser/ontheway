@@ -64,9 +64,26 @@ The whole point of the app is: **plan once, track locally, forever.**
      their route progress has passed the stop's position - whichever happens first. This
      covers both "pulled into the rest stop" and "blew past it without stopping."
   4. Recomputes the nearest *upcoming* place per checked POI category the same way, so e.g. a
-     "Next Fast Food: McDonald's - 4.2 mi" hint can show alongside the rest stop countdown -
-     a loose proximity hint, not turn-by-turn guidance, and it never touches the map's camera
-     or route.
+     "Next Fast Food: McDonald's - 4.2 mi" hint can show alongside the rest stop countdown.
+  5. Finds the current position within the selected route's cached turn-by-turn `steps` (parsed
+     once from the same Directions API response, at trip setup) and computes distance to the
+     next maneuver - this drives the `TurnByTurnBanner`.
+  6. Resolves a heading for the camera: the GPS fix's own bearing when moving fast enough to
+     trust it, otherwise the bearing between the last two fixes, otherwise holds steady.
+
+## Driving mode
+
+Once a route is selected, `MapScreen` switches to a tilted (60°), zoomed-in camera that follows
+the driver's position and bearing - `MainViewModel` doesn't touch the camera directly, it just
+publishes `currentLocation` / `currentBearingDegrees` / `drivingMode`, and the screen's
+`LaunchedEffect` re-animates the `CameraPositionState` on each update. A small FAB toggles back to
+a flat, north-up overview. If the driver manually drags the map, a gesture-reason check on the
+camera state turns off auto-follow until they tap the main "recenter" FAB, which snaps back to
+whichever mode (driving or overview) was active.
+
+The `TurnByTurnBanner` above the map shows the upcoming maneuver's icon (mapped from Directions'
+`maneuver` field), instruction text (HTML-stripped), and live distance - all recomputed locally
+against the steps already fetched in the one Directions call, never a new network request.
 
 ## Setup
 

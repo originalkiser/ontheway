@@ -13,30 +13,32 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.reststop.countdown.data.model.PoiCategory
 import com.reststop.countdown.data.model.PointOfInterest
 import com.reststop.countdown.ui.DistanceUnit
 import com.reststop.countdown.ui.formatDistance
+import com.reststop.countdown.ui.poiCategoryIcon
 
 /**
- * Checkbox row for optional "other places along the route" categories, plus the resulting list
- * sorted by distance from the route polyline, and a compact "upcoming" summary per category -
- * a loose, non-turn-by-turn nav hint that never takes over the main map/route.
+ * Checkbox row for optional "other places along the route" categories, plus - for each checked
+ * category - a compact summary card: category icon/name, the nearest not-yet-passed place, and
+ * the second-nearest. Deliberately not a scrolling list of every match (that was overwhelming);
+ * the full set still exists on the map as color-coded pins.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun PoiPanel(
     selectedCategories: Set<PoiCategory>,
     loadingCategory: PoiCategory?,
-    nearbyPois: List<PointOfInterest>,
-    upcomingPoisByCategory: Map<PoiCategory, PointOfInterest>,
+    upcomingPoisByCategory: Map<PoiCategory, List<PointOfInterest>>,
     distanceUnit: DistanceUnit,
     onToggleCategory: (PoiCategory) -> Unit,
     modifier: Modifier = Modifier,
@@ -68,35 +70,40 @@ fun PoiPanel(
 
             if (upcomingPoisByCategory.isNotEmpty()) {
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-                upcomingPoisByCategory.forEach { (category, poi) ->
-                    Text(
-                        text = "Next ${category.displayName}: ${poi.name} - ${formatDistance(poi.distanceAlongRouteMeters, distanceUnit)}",
-                        fontSize = 13.sp,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-            }
-
-            if (nearbyPois.isNotEmpty()) {
-                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-                Text(text = "Closest to the route:", style = MaterialTheme.typography.labelMedium)
-                // A plain Column, not LazyColumn: this sits inside a parent that's already
-                // vertically scrollable (unbounded height), which LazyColumn can't measure
-                // against. Capped to 20 rows, so no need for list virtualization here.
-                Column(modifier = Modifier.padding(top = 4.dp)) {
-                    nearbyPois.take(20).forEach { poi ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                        ) {
-                            Text(text = "${poi.category.displayName}: ${poi.name}", style = MaterialTheme.typography.bodySmall)
-                            Text(
-                                text = formatDistance(poi.distanceFromRouteMeters, distanceUnit),
-                                style = MaterialTheme.typography.bodySmall,
-                            )
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    selectedCategories.forEach { category ->
+                        upcomingPoisByCategory[category]?.let { nearest ->
+                            CategorySummaryRow(category, nearest, distanceUnit)
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CategorySummaryRow(category: PoiCategory, nearest: List<PointOfInterest>, distanceUnit: DistanceUnit) {
+    Row(verticalAlignment = Alignment.Top) {
+        Icon(
+            imageVector = poiCategoryIcon(category),
+            contentDescription = category.displayName,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(top = 2.dp).size(20.dp),
+        )
+        Column(modifier = Modifier.padding(start = 8.dp)) {
+            Text(text = category.displayName, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+            nearest.getOrNull(0)?.let { first ->
+                Text(
+                    text = "${first.name} - ${formatDistance(first.distanceAlongRouteMeters, distanceUnit)}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            nearest.getOrNull(1)?.let { second ->
+                Text(
+                    text = "Then ${second.name} - ${formatDistance(second.distanceAlongRouteMeters, distanceUnit)}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
         }
     }

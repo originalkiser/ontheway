@@ -10,6 +10,7 @@ import com.reststop.countdown.data.model.PoiCategory
 import com.reststop.countdown.data.model.PointOfInterest
 import com.reststop.countdown.data.model.RestStop
 import com.reststop.countdown.data.model.RouteInfo
+import com.reststop.countdown.data.model.RouteStep
 import com.reststop.countdown.domain.repository.TripRepository
 import com.reststop.countdown.domain.util.RoutePolylineIndex
 import com.reststop.countdown.location.LocationTracker
@@ -27,9 +28,10 @@ import kotlinx.coroutines.launch
  * Owns the whole trip lifecycle:
  *  1. [onDestinationChanged] debounces destination-search autocomplete as the user types.
  *  2. [startTrip] fetches route alternatives; [selectRoute] (or auto-selection when there's only
- *     one) then makes the one-and-only Places sweep for rest stops.
- *  3. [beginLocationUpdates] then drives everything else purely off local GPS fixes - no further
- *     network calls happen until (if ever) a brand new trip is started.
+ *     one) then makes the one-and-only Places sweep for rest stops and enters driving mode.
+ *  3. [beginLocationUpdates] then drives everything else purely off local GPS fixes - the
+ *     turn-by-turn banner, the camera bearing, rest-stop countdown/auto-advance, and POI
+ *     proximity - with no further network calls.
  */
 class MainViewModel(
     private val tripRepository: TripRepository,
@@ -46,18 +48,26 @@ class MainViewModel(
         /** Only surface a POI as "upcoming" once it's within this many meters of the drive. */
         private const val UPCOMING_POI_MAX_LATERAL_METERS = 3_000.0
 
+        /** How many nearest not-yet-passed places to surface per checked category. */
+        private const val UPCOMING_POIS_PER_CATEGORY = 2
+
         /** Debounce so autocomplete doesn't fire a request on every single keystroke. */
         private const val AUTOCOMPLETE_DEBOUNCE_MILLIS = 300L
+
+        /** Below this speed, a GPS fix's reported bearing is too noisy to trust for the camera. */
+        private const val MIN_SPEED_FOR_BEARING_MPS = 1.0f
     }
 
     private val _uiState = MutableStateFlow(TripUiState())
     val uiState: StateFlow<TripUiState> = _uiState.asStateFlow()
 
     private var routeIndex: RoutePolylineIndex? = null
+    private var routeSteps: List<RouteStep> = emptyList()
     private val restStopQueue = ArrayDeque<RestStop>()
     private var locationJob: Job? = null
     private var suggestionsJob: Job? = null
     private var pendingOrigin: GeoPoint? = null
+    private var previousLocation: Location? = null
 
     fun onPermissionResult(granted: Boolean) {
         val wasGranted = _uiState.value.hasLocationPermission
@@ -117,6 +127,11 @@ class MainViewModel(
         }
     }
 
+    /** Flips between the tilted, bearing-following driving view and a flat north-up overview. */
+    fun toggleDrivingMode() {
+        _uiState.update { it.copy(drivingMode = !it.drivingMode) }
+    }
+
     /** Fetches route alternatives. If there's more than one, waits for [selectRoute]; otherwise proceeds immediately. */
     fun startTrip() {
         val destination = _uiState.value.destinationInput.trim()
@@ -160,6 +175,7 @@ class MainViewModel(
 
     private suspend fun proceedWithRoute(route: RouteInfo, origin: GeoPoint) {
         routeIndex = RoutePolylineIndex.build(route.polyline)
+        routeSteps = route.steps
 
         val restStops = tripRepository.fetchRestStops(route.polyline).getOrElse { emptyList() }
         restStopQueue.clear()
@@ -169,12 +185,15 @@ class MainViewModel(
             it.copy(
                 isLoadingTrip = false,
                 tripActive = true,
+                drivingMode = true,
                 routeOptions = emptyList(),
                 awaitingRouteSelection = false,
                 routePolyline = route.polyline,
                 currentLocation = origin,
                 upcomingRestStops = restStopQueue.toList(),
                 nextRestStop = restStopQueue.firstOrNull(),
+                upcomingStep = route.steps.getOrNull(1),
+                distanceToManeuverMeters = route.steps.getOrNull(1)?.distanceAlongRouteMeters,
             )
         }
 
@@ -220,8 +239,9 @@ class MainViewModel(
     }
 
     /**
-     * The real-time countdown loop. Runs entirely on-device against the cached route/rest-stop
-     * data fetched once in [proceedWithRoute] - no Directions/Places calls happen here.
+     * The real-time countdown + turn-by-turn loop. Runs entirely on-device against the cached
+     * route/rest-stop data fetched once in [proceedWithRoute] - no Directions/Places calls
+     * happen here.
      */
     private fun handleLocationUpdate(location: Location) {
         val index = routeIndex ?: return
@@ -244,31 +264,72 @@ class MainViewModel(
         val nextStop = restStopQueue.firstOrNull()
         val distanceToNextMeters = nextStop?.let { location.distanceTo(it.location.toAndroidLocation()).toDouble() }
 
+        val bearing = resolveBearing(location)
+        previousLocation = location
+
+        val currentStepIndex = routeSteps.indexOfLast { it.distanceAlongRouteMeters <= projection.distanceAlongRouteMeters }
+            .coerceAtLeast(0)
+        val upcomingStep = routeSteps.getOrNull(currentStepIndex + 1)
+        val distanceToManeuverMeters = when {
+            upcomingStep != null -> (upcomingStep.distanceAlongRouteMeters - projection.distanceAlongRouteMeters).coerceAtLeast(0.0)
+            routeSteps.isNotEmpty() -> (index.totalLengthMeters - projection.distanceAlongRouteMeters).coerceAtLeast(0.0)
+            else -> null
+        }
+        // On the final step there's no "next" maneuver - synthesize an arrival instruction so the
+        // banner has something consistent to render instead of special-casing null in the UI.
+        val displayedStep = upcomingStep ?: if (routeSteps.isNotEmpty()) {
+            RouteStep(
+                instruction = "Arrive at your destination",
+                maneuver = null,
+                distanceMeters = 0,
+                location = currentPoint,
+                distanceAlongRouteMeters = index.totalLengthMeters,
+            )
+        } else {
+            null
+        }
+
         _uiState.update { current ->
             current.copy(
                 currentLocation = currentPoint,
+                currentBearingDegrees = bearing,
                 currentProgressMeters = projection.distanceAlongRouteMeters,
+                upcomingStep = displayedStep,
+                distanceToManeuverMeters = distanceToManeuverMeters,
                 upcomingRestStops = restStopQueue.toList(),
                 passedRestStops = current.passedRestStops + justPassed,
                 nextRestStop = nextStop,
                 distanceToNextRestStopMeters = distanceToNextMeters,
-                upcomingPoisByCategory = nearestUpcomingPoiPerCategory(current, projection.distanceAlongRouteMeters),
+                upcomingPoisByCategory = nearestUpcomingPoisPerCategory(current, projection.distanceAlongRouteMeters),
             )
         }
     }
 
-    /** Picks, per selected category, the closest not-yet-passed place - a lightweight "loose" nav hint. */
-    private fun nearestUpcomingPoiPerCategory(state: TripUiState, currentProgressMeters: Double): Map<PoiCategory, PointOfInterest> =
+    /** GPS-reported bearing when moving fast enough to trust it; falls back to fix-to-fix bearing, then holds the last known heading. */
+    private fun resolveBearing(location: Location): Float {
+        if (location.hasBearing() && location.speed >= MIN_SPEED_FOR_BEARING_MPS) {
+            return location.bearing
+        }
+        val previous = previousLocation
+        if (previous != null && previous.distanceTo(location) > 5f) {
+            return previous.bearingTo(location)
+        }
+        return _uiState.value.currentBearingDegrees
+    }
+
+    /** Picks, per selected category, the nearest not-yet-passed places - a lightweight "loose" nav hint. */
+    private fun nearestUpcomingPoisPerCategory(state: TripUiState, currentProgressMeters: Double): Map<PoiCategory, List<PointOfInterest>> =
         state.selectedCategories.mapNotNull { category ->
-            val next = state.poiByCategory[category].orEmpty()
+            val nearest = state.poiByCategory[category].orEmpty()
                 .filter { it.distanceAlongRouteMeters >= currentProgressMeters && it.distanceFromRouteMeters <= UPCOMING_POI_MAX_LATERAL_METERS }
-                .minByOrNull { it.distanceAlongRouteMeters }
-            next?.let { category to it }
+                .sortedBy { it.distanceAlongRouteMeters }
+                .take(UPCOMING_POIS_PER_CATEGORY)
+            if (nearest.isEmpty()) null else category to nearest
         }.toMap()
 
     private fun recomputeUpcomingPois() {
         val current = _uiState.value
-        _uiState.update { it.copy(upcomingPoisByCategory = nearestUpcomingPoiPerCategory(current, current.currentProgressMeters)) }
+        _uiState.update { it.copy(upcomingPoisByCategory = nearestUpcomingPoisPerCategory(current, current.currentProgressMeters)) }
     }
 
     override fun onCleared() {

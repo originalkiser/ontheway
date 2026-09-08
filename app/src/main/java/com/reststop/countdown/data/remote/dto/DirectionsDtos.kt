@@ -23,9 +23,24 @@ data class LegDto(
     @SerializedName("distance") val distance: ValueTextDto,
     @SerializedName("duration") val duration: ValueTextDto,
     @SerializedName("end_address") val endAddress: String = "",
+    @SerializedName("steps") val steps: List<StepDto> = emptyList(),
 )
 
 data class ValueTextDto(
     @SerializedName("value") val value: Int,
     @SerializedName("text") val text: String,
+)
+
+/** One turn-by-turn maneuver within a leg. */
+data class StepDto(
+    @SerializedName("html_instructions") val htmlInstructions: String = "",
+    @SerializedName("maneuver") val maneuver: String? = null,
+    @SerializedName("distance") val distance: ValueTextDto,
+    @SerializedName("start_location") val startLocation: DirectionsLatLngDto,
+)
+
+/** The legacy Directions API uses {"lat", "lng"} - distinct from Places (New)'s {"latitude", "longitude"}. */
+data class DirectionsLatLngDto(
+    @SerializedName("lat") val lat: Double,
+    @SerializedName("lng") val lng: Double,
 )

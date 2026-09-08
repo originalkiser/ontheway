@@ -6,6 +6,7 @@ import com.reststop.countdown.data.model.PoiCategory
 import com.reststop.countdown.data.model.PointOfInterest
 import com.reststop.countdown.data.model.RestStop
 import com.reststop.countdown.data.model.RouteInfo
+import com.reststop.countdown.data.model.RouteStep
 
 enum class DistanceUnit(val label: String) {
     MILES("mi"),
@@ -32,9 +33,14 @@ data class TripUiState(
     val awaitingRouteSelection: Boolean = false,
 
     val tripActive: Boolean = false,
+    val drivingMode: Boolean = true,
     val routePolyline: List<GeoPoint> = emptyList(),
     val currentLocation: GeoPoint? = null,
+    val currentBearingDegrees: Float = 0f,
     val currentProgressMeters: Double = 0.0,
+
+    val upcomingStep: RouteStep? = null,
+    val distanceToManeuverMeters: Double? = null,
 
     val upcomingRestStops: List<RestStop> = emptyList(),
     val passedRestStops: List<RestStop> = emptyList(),
@@ -44,7 +50,8 @@ data class TripUiState(
     val selectedCategories: Set<PoiCategory> = emptySet(),
     val loadingCategory: PoiCategory? = null,
     val poiByCategory: Map<PoiCategory, List<PointOfInterest>> = emptyMap(),
-    val upcomingPoisByCategory: Map<PoiCategory, PointOfInterest> = emptyMap(),
+    /** Up to the 2 nearest not-yet-passed places per selected category. */
+    val upcomingPoisByCategory: Map<PoiCategory, List<PointOfInterest>> = emptyMap(),
 
     val distanceUnit: DistanceUnit = DistanceUnit.MILES,
 ) {

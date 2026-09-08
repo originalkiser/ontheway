@@ -6,6 +6,7 @@ import com.reststop.countdown.data.model.PoiCategory
 import com.reststop.countdown.data.model.PointOfInterest
 import com.reststop.countdown.data.model.RestStop
 import com.reststop.countdown.data.model.RouteInfo
+import com.reststop.countdown.data.model.RouteStep
 import com.reststop.countdown.data.remote.DirectionsApiService
 import com.reststop.countdown.data.remote.PlacesApiService
 import com.reststop.countdown.data.remote.dto.AutocompleteRequestDto
@@ -16,6 +17,7 @@ import com.reststop.countdown.data.remote.dto.LocationRestrictionDto
 import com.reststop.countdown.data.remote.dto.NearbySearchRequestDto
 import com.reststop.countdown.data.remote.dto.PlaceDto
 import com.reststop.countdown.domain.repository.TripRepository
+import com.reststop.countdown.domain.util.HtmlText
 import com.reststop.countdown.domain.util.PolylineDecoder
 import com.reststop.countdown.domain.util.RoutePolylineIndex
 import com.reststop.countdown.domain.util.RouteSampler
@@ -80,12 +82,27 @@ class TripRepositoryImpl(
 
         response.routes.map { route ->
             val leg = route.legs.firstOrNull() ?: error("Route had no legs")
+
+            var cumulativeMeters = 0.0
+            val steps = leg.steps.map { step ->
+                val routeStep = RouteStep(
+                    instruction = HtmlText.strip(step.htmlInstructions),
+                    maneuver = step.maneuver,
+                    distanceMeters = step.distance.value,
+                    location = GeoPoint(step.startLocation.lat, step.startLocation.lng),
+                    distanceAlongRouteMeters = cumulativeMeters,
+                )
+                cumulativeMeters += step.distance.value
+                routeStep
+            }
+
             RouteInfo(
                 summary = route.summary.ifBlank { leg.endAddress },
                 polyline = PolylineDecoder.decode(route.overviewPolyline.points),
                 distanceMeters = leg.distance.value,
                 durationSeconds = leg.duration.value,
                 destinationAddress = leg.endAddress,
+                steps = steps,
             )
         }
     }
