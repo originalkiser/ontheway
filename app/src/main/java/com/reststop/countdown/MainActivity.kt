@@ -2,6 +2,7 @@ package com.reststop.countdown
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -11,6 +12,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.google.android.libraries.navigation.NavigationApi
+import com.google.android.libraries.navigation.Navigator
 import com.reststop.countdown.ui.MainViewModel
 import com.reststop.countdown.ui.components.PermissionRequestScreen
 import com.reststop.countdown.ui.screens.MapScreen
@@ -23,10 +26,14 @@ class MainActivity : ComponentActivity() {
         MainViewModel.Factory(app.container.tripRepository, app.container.locationTracker)
     }
 
-    private val requiredPermissions = arrayOf(
-        Manifest.permission.ACCESS_FINE_LOCATION,
-        Manifest.permission.ACCESS_COARSE_LOCATION,
-    )
+    private val requiredPermissions: Array<String> = buildList {
+        add(Manifest.permission.ACCESS_FINE_LOCATION)
+        add(Manifest.permission.ACCESS_COARSE_LOCATION)
+        // The Navigation SDK's ongoing turn-by-turn notification needs this on Android 13+.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }.toTypedArray()
 
     private val requestLocationPermissions = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -34,6 +41,7 @@ class MainActivity : ComponentActivity() {
         val granted = grants[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
             grants[Manifest.permission.ACCESS_COARSE_LOCATION] == true
         viewModel.onPermissionResult(granted)
+        if (granted) requestNavigator()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -42,6 +50,8 @@ class MainActivity : ComponentActivity() {
         viewModel.onPermissionResult(hasLocationPermission())
         if (!hasLocationPermission()) {
             requestLocationPermissions.launch(requiredPermissions)
+        } else {
+            requestNavigator()
         }
 
         setContent {
@@ -57,6 +67,27 @@ class MainActivity : ComponentActivity() {
     private fun hasLocationPermission(): Boolean =
         ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
             ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
+    /**
+     * One-time acquisition of the app-wide [Navigator] session. Also triggers Google's Navigation
+     * Terms of Service dialog on its own the first time it's called, before [Navigator] is handed
+     * back. If it fails (e.g. the Navigation SDK isn't enabled yet for this API key), the app
+     * still works - the driving screen just won't have native turn-by-turn guidance.
+     */
+    private fun requestNavigator() {
+        NavigationApi.getNavigator(
+            this,
+            object : NavigationApi.NavigatorListener {
+                override fun onNavigatorReady(navigator: Navigator) {
+                    viewModel.onNavigatorReady(navigator)
+                }
+
+                override fun onError(errorCode: Int) {
+                    viewModel.onNavigatorUnavailable()
+                }
+            },
+        )
+    }
 }
 
 @Composable

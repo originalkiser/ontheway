@@ -4,12 +4,13 @@ import android.location.Location
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.google.android.libraries.navigation.Navigator
+import com.google.android.libraries.navigation.Waypoint
 import com.reststop.countdown.data.model.GeoPoint
 import com.reststop.countdown.data.model.PlaceSuggestion
 import com.reststop.countdown.data.model.PoiCategory
 import com.reststop.countdown.data.model.PointOfInterest
 import com.reststop.countdown.data.model.RouteInfo
-import com.reststop.countdown.data.model.RouteStep
 import com.reststop.countdown.domain.repository.TripRepository
 import com.reststop.countdown.domain.util.RoutePolylineIndex
 import com.reststop.countdown.location.LocationTracker
@@ -26,12 +27,14 @@ import kotlinx.coroutines.launch
 /**
  * Owns the whole trip lifecycle:
  *  1. [onDestinationChanged] debounces destination search as the user types.
- *  2. [startTrip] fetches route alternatives; [selectRoute] (or auto-selection when there's only
- *     one) then enters driving mode. [setSecondaryDestination] later reroutes through a chosen
- *     POI as a waypoint - the one other network call allowed mid-trip, since it's a deliberate
- *     driver action, not a background poll.
- *  3. [beginLocationUpdates] then drives everything else purely off local GPS fixes - the
- *     turn-by-turn banner, ETA, camera bearing, and POI proximity - with no further network calls.
+ *  2. [startTrip] fetches a route once, for the "confirm destination" screen. [confirmRoute] then
+ *     hands off to the Navigation SDK for the actual driving - native route line, turn-by-turn
+ *     banner, voice guidance and rerouting all happen inside the SDK itself, driven by
+ *     [startGuidance] below. [setSecondaryDestination] reroutes both the SDK and our own trip
+ *     state through a chosen POI as a waypoint.
+ *  3. [beginLocationUpdates] runs entirely on-device, independent of the SDK's own tracking - it
+ *     exists purely to know how far along the route the driver is, for ranking "upcoming" POIs
+ *     and for showing the single selected-stop pin. No further network calls happen here.
  */
 class MainViewModel(
     private val tripRepository: TripRepository,
@@ -50,24 +53,18 @@ class MainViewModel(
 
         /** Debounce so destination search doesn't fire a request on every single keystroke. */
         private const val SEARCH_DEBOUNCE_MILLIS = 300L
-
-        /** Below this speed, a GPS fix's reported bearing is too noisy to trust for the camera. */
-        private const val MIN_SPEED_FOR_BEARING_MPS = 1.0f
     }
 
     private val _uiState = MutableStateFlow(TripUiState())
     val uiState: StateFlow<TripUiState> = _uiState.asStateFlow()
 
     private var routeIndex: RoutePolylineIndex? = null
-    private var routeSteps: List<RouteStep> = emptyList()
-    private var routeTotalDistanceMeters: Int = 0
-    private var routeTotalDurationSeconds: Int = 0
     private var locationJob: Job? = null
     private var suggestionsJob: Job? = null
     private var pendingOrigin: GeoPoint? = null
-    private var previousLocation: Location? = null
     private var originalDestinationQuery: String = ""
     private var originalDestinationPlaceId: String? = null
+    private var navigator: Navigator? = null
 
     fun onPermissionResult(granted: Boolean) {
         val wasGranted = _uiState.value.hasLocationPermission
@@ -83,6 +80,16 @@ class MainViewModel(
             val location = locationTracker.awaitCurrentLocation() ?: return@launch
             _uiState.update { it.copy(initialCameraTarget = GeoPoint(location.latitude, location.longitude)) }
         }
+    }
+
+    /** The app-wide Navigator session became available (first launch may show Google's Nav ToS dialog first). */
+    fun onNavigatorReady(navigator: Navigator) {
+        this.navigator = navigator
+    }
+
+    /** Navigator setup failed - the app still works, just without native turn-by-turn this session. */
+    fun onNavigatorUnavailable() {
+        navigator = null
     }
 
     fun onDestinationChanged(text: String) {
@@ -133,11 +140,6 @@ class MainViewModel(
         }
     }
 
-    /** Flips between the tilted, bearing-following driving view and a flat north-up overview. */
-    fun toggleDrivingMode() {
-        _uiState.update { it.copy(drivingMode = !it.drivingMode) }
-    }
-
     fun toggleCategoryMenu() {
         _uiState.update { it.copy(isCategoryMenuOpen = !it.isCategoryMenuOpen) }
     }
@@ -147,7 +149,7 @@ class MainViewModel(
         _uiState.update { it.copy(expandedCategoryChip = if (it.expandedCategoryChip == category) null else category) }
     }
 
-    /** Fetches route alternatives. If there's more than one, waits for [selectRoute]; otherwise proceeds immediately. */
+    /** Fetches a single route and surfaces it on the "confirm destination" screen. */
     fun startTrip() {
         val destination = _uiState.value.destinationInput.trim()
         if (destination.isEmpty() || _uiState.value.isLoadingTrip) return
@@ -165,40 +167,44 @@ class MainViewModel(
             originalDestinationQuery = destination
             originalDestinationPlaceId = _uiState.value.selectedDestinationPlaceId
 
-            val routes = tripRepository.fetchRoute(origin, destination, originalDestinationPlaceId)
+            val route = tripRepository.fetchRoute(origin, destination, originalDestinationPlaceId)
                 .getOrElse { throwable ->
                     _uiState.update { it.copy(isLoadingTrip = false, errorMessage = throwable.message ?: "Failed to fetch route.") }
                     return@launch
                 }
+                .firstOrNull()
 
-            // Always confirm before tracking starts, even when there's only one route - the
-            // driver should see exactly where they're headed (and its distance/time) and get a
-            // deliberate "Start" tap, not have the app silently commit to whatever Directions
-            // (or a mistyped/misheard address) resolved to.
-            _uiState.update {
-                it.copy(isLoadingTrip = false, routeOptions = routes, awaitingRouteSelection = true)
+            if (route == null) {
+                _uiState.update { it.copy(isLoadingTrip = false, errorMessage = "No route found for \"$destination\".") }
+                return@launch
             }
+
+            // Always confirm before tracking starts - the driver should see exactly where they're
+            // headed (and its distance/time) and get a deliberate "Start" tap, not have the app
+            // silently commit to whatever Directions (or a mistyped/misheard address) resolved to.
+            _uiState.update { it.copy(isLoadingTrip = false, pendingRoute = route) }
         }
     }
 
-    /** User picked one of several route alternatives. */
-    fun selectRoute(route: RouteInfo) {
+    /** Driver tapped "Start Trip" on the confirm screen. */
+    fun confirmRoute() {
+        val route = _uiState.value.pendingRoute ?: return
         val origin = pendingOrigin ?: _uiState.value.currentLocation ?: return
         viewModelScope.launch {
-            _uiState.update { it.copy(isLoadingTrip = true, awaitingRouteSelection = false, routeOptions = emptyList()) }
+            _uiState.update { it.copy(isLoadingTrip = true, pendingRoute = null) }
             proceedWithRoute(route, origin, waypoint = null)
         }
     }
 
     /** "Not right? Edit" on the confirm screen - back to the destination field, nothing else disturbed. */
     fun cancelRouteSelection() {
-        _uiState.update { it.copy(awaitingRouteSelection = false, routeOptions = emptyList()) }
+        _uiState.update { it.copy(pendingRoute = null) }
     }
 
     /**
      * A driver-initiated detour: reroutes through [poi] before continuing to the original
-     * destination. One extra Directions call (deliberate, not a background poll) - after this,
-     * tracking goes right back to zero further network calls until the driver changes their mind.
+     * destination. One extra Directions call (deliberate, not a background poll) for our own
+     * POI-corridor bookkeeping - the Navigation SDK reroutes itself the same moment.
      */
     fun setSecondaryDestination(poi: PointOfInterest) {
         val origin = _uiState.value.currentLocation ?: return
@@ -227,8 +233,7 @@ class MainViewModel(
         }
     }
 
-    private suspend fun proceedWithRoute(route: RouteInfo, origin: GeoPoint, waypoint: PointOfInterest?) {
-        val wasAlreadyActive = _uiState.value.tripActive
+    private fun proceedWithRoute(route: RouteInfo, origin: GeoPoint, waypoint: PointOfInterest?) {
         val newIndex = RoutePolylineIndex.build(route.polyline)
 
         // Re-project any already-fetched POIs onto the new polyline (e.g. after a reroute) -
@@ -241,41 +246,69 @@ class MainViewModel(
         }
 
         routeIndex = newIndex
-        routeSteps = route.steps
-        routeTotalDistanceMeters = route.distanceMeters
-        routeTotalDurationSeconds = route.durationSeconds
 
         _uiState.update {
             it.copy(
                 isLoadingTrip = false,
                 isReroutingToWaypoint = false,
                 tripActive = true,
-                drivingMode = if (wasAlreadyActive) it.drivingMode else true,
-                routeOptions = emptyList(),
-                awaitingRouteSelection = false,
+                pendingRoute = null,
                 routePolyline = route.polyline,
                 currentLocation = origin,
                 selectedWaypoint = waypoint,
                 waypointArrivalDistanceMeters = route.waypointArrivalDistanceMeters,
-                upcomingStep = route.steps.getOrNull(1),
-                distanceToManeuverMeters = route.steps.getOrNull(1)?.distanceAlongRouteMeters,
                 poiByCategory = reprojectedPoiByCategory,
             )
         }
 
+        startGuidance(route, waypoint)
+
         if (locationJob == null) beginLocationUpdates()
+    }
+
+    /** Hands the same destination (and waypoint, if any) to the Navigation SDK's own routing/guidance. */
+    private fun startGuidance(route: RouteInfo, waypoint: PointOfInterest?) {
+        val nav = navigator
+        if (nav == null) {
+            _uiState.update { it.copy(errorMessage = "Turn-by-turn isn't ready yet - the app will still track your progress.") }
+            return
+        }
+
+        val waypoints = try {
+            buildList {
+                waypoint?.let { add(Waypoint.builder().setPlaceId(it.placeId).setTitle(it.name).build()) }
+                val destinationBuilder = Waypoint.builder().setTitle(route.destinationAddress)
+                val placeId = originalDestinationPlaceId
+                if (placeId != null) {
+                    destinationBuilder.setPlaceId(placeId)
+                } else {
+                    val destinationPoint = route.polyline.last()
+                    destinationBuilder.setLatLng(destinationPoint.latitude, destinationPoint.longitude)
+                }
+                add(destinationBuilder.build())
+            }
+        } catch (throwable: Exception) {
+            _uiState.update { it.copy(errorMessage = "Couldn't start turn-by-turn guidance for this destination.") }
+            return
+        }
+
+        nav.setDestinations(waypoints).setOnResultListener { status ->
+            if (status == Navigator.RouteStatus.OK) {
+                nav.startGuidance()
+            } else {
+                _uiState.update { it.copy(errorMessage = "Turn-by-turn guidance couldn't start (status: $status).") }
+            }
+        }
     }
 
     /** Abandons the active trip and returns to the destination search screen. */
     fun endTrip() {
+        navigator?.stopGuidance()
+        navigator?.clearDestinations()
         locationJob?.cancel()
         locationJob = null
         routeIndex = null
-        routeSteps = emptyList()
-        routeTotalDistanceMeters = 0
-        routeTotalDurationSeconds = 0
         pendingOrigin = null
-        previousLocation = null
         originalDestinationQuery = ""
         originalDestinationPlaceId = null
         _uiState.update { TripUiState(hasLocationPermission = it.hasLocationPermission, initialCameraTarget = it.currentLocation ?: it.initialCameraTarget) }
@@ -320,76 +353,30 @@ class MainViewModel(
     }
 
     /**
-     * The real-time countdown + turn-by-turn loop. Runs entirely on-device against the cached
-     * route/POI data fetched once in [proceedWithRoute] - no Directions/Places calls happen here.
+     * Tracks progress along the route purely for our own POI-corridor bookkeeping (ranking
+     * "upcoming" places, clearing a passed waypoint) - independent of the Navigation SDK's own
+     * tracking, which drives the native turn-by-turn UI separately. No network calls happen here.
      */
     private fun handleLocationUpdate(location: Location) {
         val index = routeIndex ?: return
         val currentPoint = GeoPoint(location.latitude, location.longitude)
         val projection = index.project(currentPoint)
 
-        val bearing = resolveBearing(location)
-        previousLocation = location
-
-        val currentStepIndex = routeSteps.indexOfLast { it.distanceAlongRouteMeters <= projection.distanceAlongRouteMeters }
-            .coerceAtLeast(0)
-        val upcomingStep = routeSteps.getOrNull(currentStepIndex + 1)
-        val distanceToManeuverMeters = when {
-            upcomingStep != null -> (upcomingStep.distanceAlongRouteMeters - projection.distanceAlongRouteMeters).coerceAtLeast(0.0)
-            routeSteps.isNotEmpty() -> (index.totalLengthMeters - projection.distanceAlongRouteMeters).coerceAtLeast(0.0)
-            else -> null
-        }
-        // On the final step there's no "next" maneuver - synthesize an arrival instruction so the
-        // banner has something consistent to render instead of special-casing null in the UI.
-        val displayedStep = upcomingStep ?: if (routeSteps.isNotEmpty()) {
-            RouteStep(
-                instruction = "Arrive at your destination",
-                maneuver = null,
-                distanceMeters = 0,
-                location = currentPoint,
-                distanceAlongRouteMeters = index.totalLengthMeters,
-            )
-        } else {
-            null
-        }
-
-        val remainingDistanceMeters = (routeTotalDistanceMeters - projection.distanceAlongRouteMeters).coerceAtLeast(0.0)
-        val remainingFraction = if (routeTotalDistanceMeters > 0) remainingDistanceMeters / routeTotalDistanceMeters else 0.0
-        val remainingDurationSeconds = routeTotalDurationSeconds * remainingFraction
-        val etaEpochMillis = System.currentTimeMillis() + (remainingDurationSeconds * 1000).toLong()
-
         _uiState.update { current ->
             // Once the driver has reached (or driven past) the secondary stop, drop it and go
-            // back to normal main-destination guidance - the route itself already continues on
-            // through the same cached steps, this just clears the "via" banner.
+            // back to normal main-destination guidance - this just clears the "via" banner and
+            // the single-pin filter; the Navigation SDK's own route already continues on through.
             val waypointPassed = current.waypointArrivalDistanceMeters != null &&
                 projection.distanceAlongRouteMeters > current.waypointArrivalDistanceMeters + PASS_TOLERANCE_METERS
 
             current.copy(
                 currentLocation = currentPoint,
-                currentBearingDegrees = bearing,
                 currentProgressMeters = projection.distanceAlongRouteMeters,
-                remainingDistanceMeters = remainingDistanceMeters,
-                etaEpochMillis = etaEpochMillis,
-                upcomingStep = displayedStep,
-                distanceToManeuverMeters = distanceToManeuverMeters,
                 selectedWaypoint = if (waypointPassed) null else current.selectedWaypoint,
                 waypointArrivalDistanceMeters = if (waypointPassed) null else current.waypointArrivalDistanceMeters,
                 upcomingPoisByCategory = nearestUpcomingPoisPerCategory(current, projection.distanceAlongRouteMeters),
             )
         }
-    }
-
-    /** GPS-reported bearing when moving fast enough to trust it; falls back to fix-to-fix bearing, then holds the last known heading. */
-    private fun resolveBearing(location: Location): Float {
-        if (location.hasBearing() && location.speed >= MIN_SPEED_FOR_BEARING_MPS) {
-            return location.bearing
-        }
-        val previous = previousLocation
-        if (previous != null && previous.distanceTo(location) > 5f) {
-            return previous.bearingTo(location)
-        }
-        return _uiState.value.currentBearingDegrees
     }
 
     /** Picks, per selected category, the nearest not-yet-passed places - a lightweight "loose" nav hint. */

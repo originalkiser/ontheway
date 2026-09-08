@@ -5,7 +5,6 @@ import com.reststop.countdown.data.model.PlaceSuggestion
 import com.reststop.countdown.data.model.PoiCategory
 import com.reststop.countdown.data.model.PointOfInterest
 import com.reststop.countdown.data.model.RouteInfo
-import com.reststop.countdown.data.model.RouteStep
 
 enum class DistanceUnit(val label: String) {
     MILES("mi"),
@@ -14,7 +13,9 @@ enum class DistanceUnit(val label: String) {
 
 /**
  * Everything the Compose UI needs to render, in one immutable snapshot. Produced by
- * [MainViewModel] purely from the one-time API fetch + local GPS math - nothing here triggers
+ * [MainViewModel] from the one-time API fetch + local GPS math for the POI corridor - the actual
+ * turn-by-turn driving experience (route line, instruction banner, ETA, voice guidance) is drawn
+ * natively by the Navigation SDK itself and isn't part of this state. Nothing here triggers
  * further network calls when it changes (destination search is the one exception, driven
  * directly by text input).
  */
@@ -29,20 +30,13 @@ data class TripUiState(
     val isLoadingTrip: Boolean = false,
     val errorMessage: String? = null,
 
-    val routeOptions: List<RouteInfo> = emptyList(),
-    val awaitingRouteSelection: Boolean = false,
+    /** A single fetched route awaiting a deliberate "Start Trip" tap on the confirm screen. */
+    val pendingRoute: RouteInfo? = null,
 
     val tripActive: Boolean = false,
-    val drivingMode: Boolean = true,
     val routePolyline: List<GeoPoint> = emptyList(),
     val currentLocation: GeoPoint? = null,
-    val currentBearingDegrees: Float = 0f,
     val currentProgressMeters: Double = 0.0,
-    val remainingDistanceMeters: Double? = null,
-    val etaEpochMillis: Long? = null,
-
-    val upcomingStep: RouteStep? = null,
-    val distanceToManeuverMeters: Double? = null,
 
     /** A secondary stop the driver chose to route through before the real destination. */
     val selectedWaypoint: PointOfInterest? = null,

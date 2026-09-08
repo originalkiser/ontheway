@@ -11,7 +11,7 @@ class RestCountdownApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         container = AppContainer(this)
-        // BitmapDescriptorFactory (used for the nav-puck and route-number map markers) throws
+        // BitmapDescriptorFactory (used for destination/POI map markers) throws
         // IllegalStateException if called before the Maps SDK has initialized a native map view -
         // which can easily happen from Compose, since a remember{} block can run before a sibling
         // GoogleMap composable further down the tree has attached. Initializing explicitly here

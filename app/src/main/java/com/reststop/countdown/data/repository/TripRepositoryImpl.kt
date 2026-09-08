@@ -5,7 +5,6 @@ import com.reststop.countdown.data.model.PlaceSuggestion
 import com.reststop.countdown.data.model.PoiCategory
 import com.reststop.countdown.data.model.PointOfInterest
 import com.reststop.countdown.data.model.RouteInfo
-import com.reststop.countdown.data.model.RouteStep
 import com.reststop.countdown.data.remote.DirectionsApiService
 import com.reststop.countdown.data.remote.PlacesApiService
 import com.reststop.countdown.data.remote.dto.CircleDto
@@ -16,7 +15,6 @@ import com.reststop.countdown.data.remote.dto.NearbySearchRequestDto
 import com.reststop.countdown.data.remote.dto.PlaceDto
 import com.reststop.countdown.data.remote.dto.TextSearchRequestDto
 import com.reststop.countdown.domain.repository.TripRepository
-import com.reststop.countdown.domain.util.HtmlText
 import com.reststop.countdown.domain.util.PolylineDecoder
 import com.reststop.countdown.domain.util.RoutePolylineIndex
 import com.reststop.countdown.domain.util.RouteSampler
@@ -74,8 +72,10 @@ class TripRepositoryImpl(
             origin = "${origin.latitude},${origin.longitude}",
             destination = destination,
             apiKey = apiKey,
-            // Google doesn't support route alternatives together with waypoints.
-            alternatives = waypoints == null,
+            // The Navigation SDK drives the actual turn-by-turn guidance and computes its own
+            // route; this call is only for the "confirm destination" preview and the polyline
+            // the POI search is measured against, so alternatives are never needed.
+            alternatives = false,
             waypoints = waypoints,
         )
         if (response.routes.isEmpty()) {
@@ -86,7 +86,6 @@ class TripRepositoryImpl(
             if (route.legs.isEmpty()) error("Route had no legs")
 
             var cumulativeMeters = 0.0
-            val steps = mutableListOf<RouteStep>()
             // Concatenating every step's own detailed polyline (not the route's overview_polyline,
             // which is deliberately simplified and visibly cuts corners at high zoom) traces the
             // actual road geometry the whole way.
@@ -95,13 +94,6 @@ class TripRepositoryImpl(
 
             route.legs.forEachIndexed { legIndex, leg ->
                 leg.steps.forEach { step ->
-                    steps += RouteStep(
-                        instruction = HtmlText.strip(step.htmlInstructions),
-                        maneuver = step.maneuver,
-                        distanceMeters = step.distance.value,
-                        location = GeoPoint(step.startLocation.lat, step.startLocation.lng),
-                        distanceAlongRouteMeters = cumulativeMeters,
-                    )
                     detailedPolyline += PolylineDecoder.decode(step.polyline.points)
                     cumulativeMeters += step.distance.value
                 }
@@ -119,7 +111,6 @@ class TripRepositoryImpl(
                 distanceMeters = route.legs.sumOf { it.distance.value },
                 durationSeconds = route.legs.sumOf { it.duration.value },
                 destinationAddress = finalLeg.endAddress,
-                steps = steps,
                 waypointArrivalDistanceMeters = waypointArrivalDistanceMeters,
             )
         }

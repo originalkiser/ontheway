@@ -102,6 +102,10 @@ dependencies {
     implementation(libs.play.services.maps)
     implementation(libs.play.services.location)
     implementation(libs.maps.compose)
+    // Paid, but the first 1,000 destinations/month are free - well within personal/family use.
+    // Gives real turn-by-turn: road-snapped route, native instruction banner, voice guidance,
+    // lane info, and automatic rerouting, in place of the hand-rolled driving view.
+    implementation(libs.navigation.sdk)
 
     implementation(libs.retrofit.core)
     implementation(libs.retrofit.gson)

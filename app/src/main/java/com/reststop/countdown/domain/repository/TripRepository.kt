@@ -19,11 +19,13 @@ interface TripRepository {
     suspend fun searchDestinations(query: String, locationBias: GeoPoint?): Result<List<PlaceSuggestion>>
 
     /**
-     * Fetches candidate routes (with alternatives) from [origin] to a destination, given either
-     * as a Places [destinationPlaceId] (preferred - exact, works for names/landmarks) or a raw
-     * [destinationQuery] address/text. [waypointPlaceId], when set, routes through that place
-     * first (a "secondary destination") before continuing to the real destination - the response
-     * then has more than one leg, which the caller must concatenate.
+     * Fetches a single route from [origin] to a destination, given either as a Places
+     * [destinationPlaceId] (preferred - exact, works for names/landmarks) or a raw
+     * [destinationQuery] address/text - used only for the "confirm destination" preview and the
+     * polyline POIs are measured against; the Navigation SDK computes its own route for actual
+     * guidance. [waypointPlaceId], when set, routes through that place first (a "secondary
+     * destination") before continuing to the real destination - the response then has more than
+     * one leg, which the caller must concatenate.
      */
     suspend fun fetchRoute(
         origin: GeoPoint,
