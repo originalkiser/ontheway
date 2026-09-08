@@ -105,7 +105,14 @@ dependencies {
     // Paid, but the first 1,000 destinations/month are free - well within personal/family use.
     // Gives real turn-by-turn: road-snapped route, native instruction banner, voice guidance,
     // lane info, and automatic rerouting, in place of the hand-rolled driving view.
-    implementation(libs.navigation.sdk)
+    //
+    // The navigation-sdk AAR bundles its own copy of Maps SDK classes, which collides
+    // ("Duplicate class com.google.android.gms.maps.CameraUpdate") with the play-services-maps
+    // dependency above (also pulled in transitively by maps-compose) - excluding its embedded
+    // copy lets our own explicit play-services-maps version win instead.
+    implementation(libs.navigation.sdk) {
+        exclude(group = "com.google.android.gms", module = "play-services-maps")
+    }
 
     implementation(libs.retrofit.core)
     implementation(libs.retrofit.gson)
