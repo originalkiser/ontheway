@@ -99,20 +99,21 @@ dependencies {
     implementation(libs.androidx.material.icons.extended)
     debugImplementation(libs.androidx.ui.tooling)
 
-    implementation(libs.play.services.maps)
     implementation(libs.play.services.location)
-    implementation(libs.maps.compose)
+    // The Navigation SDK's own AAR bundles its compiled Maps SDK classes directly (not as a
+    // separate transitive dependency), so a standalone play-services-maps dependency - including
+    // maps-compose's own transitive one - collides with it ("Duplicate class
+    // com.google.android.gms.maps.CameraUpdate found in modules navigation-5.2.3.aar ... and
+    // play-services-maps-...aar"). Excluding play-services-maps from maps-compose and dropping
+    // our own explicit dependency on it leaves the Navigation SDK as the sole provider of those
+    // classes - it already supplies everything maps-compose's GoogleMap composable needs.
+    implementation(libs.maps.compose) {
+        exclude(group = "com.google.android.gms", module = "play-services-maps")
+    }
     // Paid, but the first 1,000 destinations/month are free - well within personal/family use.
     // Gives real turn-by-turn: road-snapped route, native instruction banner, voice guidance,
     // lane info, and automatic rerouting, in place of the hand-rolled driving view.
-    //
-    // The navigation-sdk AAR bundles its own copy of Maps SDK classes, which collides
-    // ("Duplicate class com.google.android.gms.maps.CameraUpdate") with the play-services-maps
-    // dependency above (also pulled in transitively by maps-compose) - excluding its embedded
-    // copy lets our own explicit play-services-maps version win instead.
-    implementation(libs.navigation.sdk) {
-        exclude(group = "com.google.android.gms", module = "play-services-maps")
-    }
+    implementation(libs.navigation.sdk)
 
     implementation(libs.retrofit.core)
     implementation(libs.retrofit.gson)
