@@ -23,7 +23,7 @@ data class LatLngDto(
     @SerializedName("longitude") val longitude: Double,
 )
 
-/** Response shape for Places API (New) `places:searchNearby`. */
+/** Response shape for Places API (New) `places:searchNearby` and `places:searchText`. */
 data class NearbySearchResponseDto(
     @SerializedName("places") val places: List<PlaceDto> = emptyList(),
 )
@@ -31,6 +31,7 @@ data class NearbySearchResponseDto(
 data class PlaceDto(
     @SerializedName("id") val id: String,
     @SerializedName("displayName") val displayName: DisplayNameDto?,
+    @SerializedName("formattedAddress") val formattedAddress: String? = null,
     @SerializedName("location") val location: LatLngDto,
 )
 
@@ -38,36 +39,15 @@ data class DisplayNameDto(
     @SerializedName("text") val text: String,
 )
 
-/** Request body for Places API (New) `places:autocomplete`. */
-data class AutocompleteRequestDto(
-    @SerializedName("input") val input: String,
+/** Request body for Places API (New) `places:searchText` - used for destination search, since
+ * (unlike Autocomplete) it returns each result's location directly, letting results be pinned
+ * on the map without a separate Place Details call per suggestion. */
+data class TextSearchRequestDto(
+    @SerializedName("textQuery") val textQuery: String,
     @SerializedName("locationBias") val locationBias: LocationBiasDto? = null,
+    @SerializedName("maxResultCount") val maxResultCount: Int = 5,
 )
 
 data class LocationBiasDto(
     @SerializedName("circle") val circle: CircleDto,
-)
-
-/** Response shape for Places API (New) `places:autocomplete`. */
-data class AutocompleteResponseDto(
-    @SerializedName("suggestions") val suggestions: List<SuggestionDto> = emptyList(),
-)
-
-data class SuggestionDto(
-    @SerializedName("placePrediction") val placePrediction: PlacePredictionDto?,
-)
-
-data class PlacePredictionDto(
-    @SerializedName("placeId") val placeId: String,
-    @SerializedName("text") val text: FormattedTextDto?,
-    @SerializedName("structuredFormat") val structuredFormat: StructuredFormatDto?,
-)
-
-data class StructuredFormatDto(
-    @SerializedName("mainText") val mainText: FormattedTextDto?,
-    @SerializedName("secondaryText") val secondaryText: FormattedTextDto?,
-)
-
-data class FormattedTextDto(
-    @SerializedName("text") val text: String,
 )

@@ -8,7 +8,6 @@ import com.reststop.countdown.data.model.GeoPoint
 import com.reststop.countdown.data.model.PlaceSuggestion
 import com.reststop.countdown.data.model.PoiCategory
 import com.reststop.countdown.data.model.PointOfInterest
-import com.reststop.countdown.data.model.RestStop
 import com.reststop.countdown.data.model.RouteInfo
 import com.reststop.countdown.data.model.RouteStep
 import com.reststop.countdown.domain.repository.TripRepository
@@ -26,12 +25,13 @@ import kotlinx.coroutines.launch
 
 /**
  * Owns the whole trip lifecycle:
- *  1. [onDestinationChanged] debounces destination-search autocomplete as the user types.
+ *  1. [onDestinationChanged] debounces destination search as the user types.
  *  2. [startTrip] fetches route alternatives; [selectRoute] (or auto-selection when there's only
- *     one) then makes the one-and-only Places sweep for rest stops and enters driving mode.
+ *     one) then enters driving mode. [setSecondaryDestination] later reroutes through a chosen
+ *     POI as a waypoint - the one other network call allowed mid-trip, since it's a deliberate
+ *     driver action, not a background poll.
  *  3. [beginLocationUpdates] then drives everything else purely off local GPS fixes - the
- *     turn-by-turn banner, the camera bearing, rest-stop countdown/auto-advance, and POI
- *     proximity - with no further network calls.
+ *     turn-by-turn banner, ETA, camera bearing, and POI proximity - with no further network calls.
  */
 class MainViewModel(
     private val tripRepository: TripRepository,
@@ -39,10 +39,7 @@ class MainViewModel(
 ) : ViewModel() {
 
     companion object {
-        /** Auto-advance when within this radius of the targeted rest stop (spec: 200-300m). */
-        private const val ARRIVAL_RADIUS_METERS = 250.0
-
-        /** Small buffer so GPS jitter right at a stop's route position doesn't flip-flop the queue. */
+        /** Small buffer so GPS jitter right at a waypoint's route position doesn't flip-flop it. */
         private const val PASS_TOLERANCE_METERS = 50.0
 
         /** Only surface a POI as "upcoming" once it's within this many meters of the drive. */
@@ -51,8 +48,8 @@ class MainViewModel(
         /** How many nearest not-yet-passed places to surface per checked category. */
         private const val UPCOMING_POIS_PER_CATEGORY = 2
 
-        /** Debounce so autocomplete doesn't fire a request on every single keystroke. */
-        private const val AUTOCOMPLETE_DEBOUNCE_MILLIS = 300L
+        /** Debounce so destination search doesn't fire a request on every single keystroke. */
+        private const val SEARCH_DEBOUNCE_MILLIS = 300L
 
         /** Below this speed, a GPS fix's reported bearing is too noisy to trust for the camera. */
         private const val MIN_SPEED_FOR_BEARING_MPS = 1.0f
@@ -63,11 +60,14 @@ class MainViewModel(
 
     private var routeIndex: RoutePolylineIndex? = null
     private var routeSteps: List<RouteStep> = emptyList()
-    private val restStopQueue = ArrayDeque<RestStop>()
+    private var routeTotalDistanceMeters: Int = 0
+    private var routeTotalDurationSeconds: Int = 0
     private var locationJob: Job? = null
     private var suggestionsJob: Job? = null
     private var pendingOrigin: GeoPoint? = null
     private var previousLocation: Location? = null
+    private var originalDestinationQuery: String = ""
+    private var originalDestinationPlaceId: String? = null
 
     fun onPermissionResult(granted: Boolean) {
         val wasGranted = _uiState.value.hasLocationPermission
@@ -97,14 +97,20 @@ class MainViewModel(
         }
 
         suggestionsJob = viewModelScope.launch {
-            delay(AUTOCOMPLETE_DEBOUNCE_MILLIS)
+            delay(SEARCH_DEBOUNCE_MILLIS)
             val bias = _uiState.value.currentLocation ?: _uiState.value.initialCameraTarget
-            tripRepository.autocomplete(text, bias)
-                .onSuccess { suggestions -> _uiState.update { it.copy(destinationSuggestions = suggestions) } }
+            tripRepository.searchDestinations(text, bias)
+                .onSuccess { results ->
+                    _uiState.update { it.copy(destinationSuggestions = results, destinationResultsExpanded = true) }
+                }
         }
     }
 
-    /** User tapped a suggestion instead of typing a raw address - searches by name work too. */
+    fun toggleDestinationResultsExpanded() {
+        _uiState.update { it.copy(destinationResultsExpanded = !it.destinationResultsExpanded) }
+    }
+
+    /** User tapped a result instead of typing a raw address - searches by name work too. */
     fun selectSuggestion(suggestion: PlaceSuggestion) {
         suggestionsJob?.cancel()
         val displayText = if (suggestion.secondaryText.isNotBlank()) {
@@ -132,6 +138,15 @@ class MainViewModel(
         _uiState.update { it.copy(drivingMode = !it.drivingMode) }
     }
 
+    fun toggleCategoryMenu() {
+        _uiState.update { it.copy(isCategoryMenuOpen = !it.isCategoryMenuOpen) }
+    }
+
+    /** Expands/collapses a category's floating chip to show its individual results. */
+    fun toggleCategoryChipExpanded(category: PoiCategory) {
+        _uiState.update { it.copy(expandedCategoryChip = if (it.expandedCategoryChip == category) null else category) }
+    }
+
     /** Fetches route alternatives. If there's more than one, waits for [selectRoute]; otherwise proceeds immediately. */
     fun startTrip() {
         val destination = _uiState.value.destinationInput.trim()
@@ -147,15 +162,17 @@ class MainViewModel(
             }
             val origin = GeoPoint(currentLocation.latitude, currentLocation.longitude)
             pendingOrigin = origin
+            originalDestinationQuery = destination
+            originalDestinationPlaceId = _uiState.value.selectedDestinationPlaceId
 
-            val routes = tripRepository.fetchRoute(origin, destination, _uiState.value.selectedDestinationPlaceId)
+            val routes = tripRepository.fetchRoute(origin, destination, originalDestinationPlaceId)
                 .getOrElse { throwable ->
                     _uiState.update { it.copy(isLoadingTrip = false, errorMessage = throwable.message ?: "Failed to fetch route.") }
                     return@launch
                 }
 
             if (routes.size == 1) {
-                proceedWithRoute(routes.first(), origin)
+                proceedWithRoute(routes.first(), origin, waypoint = null)
             } else {
                 _uiState.update {
                     it.copy(isLoadingTrip = false, routeOptions = routes, awaitingRouteSelection = true)
@@ -164,43 +181,87 @@ class MainViewModel(
         }
     }
 
-    /** User picked one of several route alternatives - now do the one-time rest-stop Places sweep and go live. */
+    /** User picked one of several route alternatives. */
     fun selectRoute(route: RouteInfo) {
         val origin = pendingOrigin ?: _uiState.value.currentLocation ?: return
         viewModelScope.launch {
             _uiState.update { it.copy(isLoadingTrip = true, awaitingRouteSelection = false, routeOptions = emptyList()) }
-            proceedWithRoute(route, origin)
+            proceedWithRoute(route, origin, waypoint = null)
         }
     }
 
-    private suspend fun proceedWithRoute(route: RouteInfo, origin: GeoPoint) {
-        routeIndex = RoutePolylineIndex.build(route.polyline)
-        routeSteps = route.steps
+    /**
+     * A driver-initiated detour: reroutes through [poi] before continuing to the original
+     * destination. One extra Directions call (deliberate, not a background poll) - after this,
+     * tracking goes right back to zero further network calls until the driver changes their mind.
+     */
+    fun setSecondaryDestination(poi: PointOfInterest) {
+        val origin = _uiState.value.currentLocation ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isReroutingToWaypoint = true, expandedCategoryChip = null, errorMessage = null) }
+            val routes = tripRepository.fetchRoute(origin, originalDestinationQuery, originalDestinationPlaceId, poi.placeId)
+                .getOrElse { throwable ->
+                    _uiState.update { it.copy(isReroutingToWaypoint = false, errorMessage = throwable.message ?: "Couldn't route via ${poi.name}.") }
+                    return@launch
+                }
+            proceedWithRoute(routes.first(), origin, waypoint = poi)
+        }
+    }
 
-        val restStops = tripRepository.fetchRestStops(route.polyline).getOrElse { emptyList() }
-        restStopQueue.clear()
-        restStopQueue.addAll(restStops)
+    /** Drops the secondary stop and reroutes straight back to the original destination. */
+    fun clearSecondaryDestination() {
+        val origin = _uiState.value.currentLocation ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isReroutingToWaypoint = true, errorMessage = null) }
+            val routes = tripRepository.fetchRoute(origin, originalDestinationQuery, originalDestinationPlaceId)
+                .getOrElse { throwable ->
+                    _uiState.update { it.copy(isReroutingToWaypoint = false, errorMessage = throwable.message ?: "Couldn't reroute.") }
+                    return@launch
+                }
+            proceedWithRoute(routes.first(), origin, waypoint = null)
+        }
+    }
+
+    private suspend fun proceedWithRoute(route: RouteInfo, origin: GeoPoint, waypoint: PointOfInterest?) {
+        val wasAlreadyActive = _uiState.value.tripActive
+        val newIndex = RoutePolylineIndex.build(route.polyline)
+
+        // Re-project any already-fetched POIs onto the new polyline (e.g. after a reroute) -
+        // purely local geometry, no new Places calls.
+        val reprojectedPoiByCategory = _uiState.value.poiByCategory.mapValues { (_, pois) ->
+            pois.map { poi ->
+                val projection = newIndex.project(poi.location)
+                poi.copy(distanceAlongRouteMeters = projection.distanceAlongRouteMeters, distanceFromRouteMeters = projection.lateralDistanceMeters)
+            }
+        }
+
+        routeIndex = newIndex
+        routeSteps = route.steps
+        routeTotalDistanceMeters = route.distanceMeters
+        routeTotalDurationSeconds = route.durationSeconds
 
         _uiState.update {
             it.copy(
                 isLoadingTrip = false,
+                isReroutingToWaypoint = false,
                 tripActive = true,
-                drivingMode = true,
+                drivingMode = if (wasAlreadyActive) it.drivingMode else true,
                 routeOptions = emptyList(),
                 awaitingRouteSelection = false,
                 routePolyline = route.polyline,
                 currentLocation = origin,
-                upcomingRestStops = restStopQueue.toList(),
-                nextRestStop = restStopQueue.firstOrNull(),
+                selectedWaypoint = waypoint,
+                waypointArrivalDistanceMeters = route.waypointArrivalDistanceMeters,
                 upcomingStep = route.steps.getOrNull(1),
                 distanceToManeuverMeters = route.steps.getOrNull(1)?.distanceAlongRouteMeters,
+                poiByCategory = reprojectedPoiByCategory,
             )
         }
 
-        beginLocationUpdates()
+        if (locationJob == null) beginLocationUpdates()
     }
 
-    /** Toggles a "other places" category checkbox, fetching it once (then caching) if newly checked. */
+    /** Toggles a POI category checkbox, fetching it once (then caching) if newly checked. */
     fun toggleCategory(category: PoiCategory) {
         val alreadySelected = category in _uiState.value.selectedCategories
         if (alreadySelected) {
@@ -240,29 +301,12 @@ class MainViewModel(
 
     /**
      * The real-time countdown + turn-by-turn loop. Runs entirely on-device against the cached
-     * route/rest-stop data fetched once in [proceedWithRoute] - no Directions/Places calls
-     * happen here.
+     * route/POI data fetched once in [proceedWithRoute] - no Directions/Places calls happen here.
      */
     private fun handleLocationUpdate(location: Location) {
         val index = routeIndex ?: return
         val currentPoint = GeoPoint(location.latitude, location.longitude)
         val projection = index.project(currentPoint)
-
-        val justPassed = mutableListOf<RestStop>()
-        while (restStopQueue.isNotEmpty()) {
-            val candidate = restStopQueue.first()
-            val straightLineDistanceMeters = location.distanceTo(candidate.location.toAndroidLocation())
-            val hasArrived = straightLineDistanceMeters <= ARRIVAL_RADIUS_METERS
-            val hasDrivenPast = projection.distanceAlongRouteMeters > candidate.distanceAlongRouteMeters + PASS_TOLERANCE_METERS
-            if (hasArrived || hasDrivenPast) {
-                justPassed += restStopQueue.removeFirst()
-            } else {
-                break
-            }
-        }
-
-        val nextStop = restStopQueue.firstOrNull()
-        val distanceToNextMeters = nextStop?.let { location.distanceTo(it.location.toAndroidLocation()).toDouble() }
 
         val bearing = resolveBearing(location)
         previousLocation = location
@@ -289,17 +333,28 @@ class MainViewModel(
             null
         }
 
+        val remainingDistanceMeters = (routeTotalDistanceMeters - projection.distanceAlongRouteMeters).coerceAtLeast(0.0)
+        val remainingFraction = if (routeTotalDistanceMeters > 0) remainingDistanceMeters / routeTotalDistanceMeters else 0.0
+        val remainingDurationSeconds = routeTotalDurationSeconds * remainingFraction
+        val etaEpochMillis = System.currentTimeMillis() + (remainingDurationSeconds * 1000).toLong()
+
         _uiState.update { current ->
+            // Once the driver has reached (or driven past) the secondary stop, drop it and go
+            // back to normal main-destination guidance - the route itself already continues on
+            // through the same cached steps, this just clears the "via" banner.
+            val waypointPassed = current.waypointArrivalDistanceMeters != null &&
+                projection.distanceAlongRouteMeters > current.waypointArrivalDistanceMeters + PASS_TOLERANCE_METERS
+
             current.copy(
                 currentLocation = currentPoint,
                 currentBearingDegrees = bearing,
                 currentProgressMeters = projection.distanceAlongRouteMeters,
+                remainingDistanceMeters = remainingDistanceMeters,
+                etaEpochMillis = etaEpochMillis,
                 upcomingStep = displayedStep,
                 distanceToManeuverMeters = distanceToManeuverMeters,
-                upcomingRestStops = restStopQueue.toList(),
-                passedRestStops = current.passedRestStops + justPassed,
-                nextRestStop = nextStop,
-                distanceToNextRestStopMeters = distanceToNextMeters,
+                selectedWaypoint = if (waypointPassed) null else current.selectedWaypoint,
+                waypointArrivalDistanceMeters = if (waypointPassed) null else current.waypointArrivalDistanceMeters,
                 upcomingPoisByCategory = nearestUpcomingPoisPerCategory(current, projection.distanceAlongRouteMeters),
             )
         }
@@ -345,9 +400,4 @@ class MainViewModel(
         override fun <T : ViewModel> create(modelClass: Class<T>): T =
             MainViewModel(tripRepository, locationTracker) as T
     }
-}
-
-private fun GeoPoint.toAndroidLocation(): Location = Location("").apply {
-    latitude = this@toAndroidLocation.latitude
-    longitude = this@toAndroidLocation.longitude
 }

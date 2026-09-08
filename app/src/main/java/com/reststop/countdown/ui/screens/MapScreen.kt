@@ -29,6 +29,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -37,19 +38,20 @@ import com.google.android.gms.maps.model.BitmapDescriptorFactory
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.maps.android.compose.CameraMoveStartedReason
 import com.google.maps.android.compose.GoogleMap
-import com.google.maps.android.compose.GoogleMapComposable
 import com.google.maps.android.compose.MapProperties
 import com.google.maps.android.compose.MapUiSettings
 import com.google.maps.android.compose.Marker
 import com.google.maps.android.compose.MarkerState
 import com.google.maps.android.compose.Polyline
 import com.google.maps.android.compose.rememberCameraPositionState
-import com.reststop.countdown.data.model.RestStop
+import com.reststop.countdown.R
 import com.reststop.countdown.ui.MainViewModel
+import com.reststop.countdown.ui.components.CategoryChipsColumn
 import com.reststop.countdown.ui.components.DestinationInputBar
-import com.reststop.countdown.ui.components.NextRestStopCard
 import com.reststop.countdown.ui.components.PoiPanel
 import com.reststop.countdown.ui.components.RouteOptionsCard
+import com.reststop.countdown.ui.components.SecondaryDestinationBanner
+import com.reststop.countdown.ui.components.TripSummaryBar
 import com.reststop.countdown.ui.components.TurnByTurnBanner
 import com.reststop.countdown.ui.poiCategoryMarkerHue
 import com.reststop.countdown.ui.toBounds
@@ -57,8 +59,9 @@ import com.reststop.countdown.ui.toLatLng
 import kotlinx.coroutines.launch
 
 private const val OVERVIEW_ZOOM = 15f
-private const val DRIVING_ZOOM = 18.5f
-private const val DRIVING_TILT = 60f
+private const val DRIVING_ZOOM = 19f
+private const val DRIVING_TILT = 65f
+private val ROUTE_COLOR = Color(0xFF0B3D91)
 
 @Composable
 fun MapScreen(viewModel: MainViewModel) {
@@ -115,11 +118,15 @@ fun MapScreen(viewModel: MainViewModel) {
         }
     }
 
+    val showNavPuck = uiState.tripActive && uiState.drivingMode && uiState.currentLocation != null
+
     Box(modifier = Modifier.fillMaxSize()) {
         GoogleMap(
             modifier = Modifier.fillMaxSize(),
             cameraPositionState = cameraPositionState,
-            properties = MapProperties(isMyLocationEnabled = uiState.hasLocationPermission),
+            // The custom nav-arrow puck below replaces the default blue dot while driving, so
+            // there's only ever one location indicator on screen.
+            properties = MapProperties(isMyLocationEnabled = uiState.hasLocationPermission && !showNavPuck),
             uiSettings = MapUiSettings(myLocationButtonEnabled = false, zoomControlsEnabled = false),
         ) {
             if (uiState.routePolyline.isNotEmpty()) {
@@ -130,10 +137,6 @@ fun MapScreen(viewModel: MainViewModel) {
                 Polyline(points = points, color = ROUTE_COLOR, width = 14f, zIndex = 2f)
             }
 
-            uiState.upcomingRestStops.forEach { restStop ->
-                RestStopMarker(restStop, isNext = restStop == uiState.nextRestStop)
-            }
-
             uiState.visiblePois.forEach { poi ->
                 Marker(
                     state = MarkerState(position = poi.location.toLatLng()),
@@ -142,16 +145,48 @@ fun MapScreen(viewModel: MainViewModel) {
                     icon = BitmapDescriptorFactory.defaultMarker(poiCategoryMarkerHue(poi.category)),
                 )
             }
+
+            // Pre-trip destination search results - shown on the map so the driver can visually
+            // confirm the right one before starting, not just pick from the text list.
+            if (!uiState.tripActive) {
+                uiState.destinationSuggestions.forEach { suggestion ->
+                    Marker(
+                        state = MarkerState(position = suggestion.location.toLatLng()),
+                        title = suggestion.primaryText,
+                        snippet = suggestion.secondaryText,
+                        icon = BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_VIOLET),
+                    )
+                }
+            }
+
+            if (showNavPuck) {
+                Marker(
+                    state = MarkerState(position = uiState.currentLocation!!.toLatLng()),
+                    icon = BitmapDescriptorFactory.fromResource(R.drawable.ic_nav_arrow),
+                    rotation = uiState.currentBearingDegrees,
+                    flat = true,
+                    anchor = Offset(0.5f, 0.5f),
+                )
+            }
         }
 
         Column(modifier = Modifier.fillMaxSize()) {
             if (uiState.tripActive) {
-                TurnByTurnBanner(
-                    upcomingStep = uiState.upcomingStep,
-                    distanceToManeuverMeters = uiState.distanceToManeuverMeters,
-                    distanceUnit = uiState.distanceUnit,
+                Column(
                     modifier = Modifier.fillMaxWidth().padding(12.dp),
-                )
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    TurnByTurnBanner(
+                        upcomingStep = uiState.upcomingStep,
+                        distanceToManeuverMeters = uiState.distanceToManeuverMeters,
+                        distanceUnit = uiState.distanceUnit,
+                    )
+                    SecondaryDestinationBanner(
+                        waypoint = uiState.selectedWaypoint,
+                        isRerouting = uiState.isReroutingToWaypoint,
+                        onClear = viewModel::clearSecondaryDestination,
+                    )
+                }
             }
 
             Column(
@@ -181,18 +216,20 @@ fun MapScreen(viewModel: MainViewModel) {
                         DestinationInputBar(
                             destination = uiState.destinationInput,
                             suggestions = uiState.destinationSuggestions,
+                            resultsExpanded = uiState.destinationResultsExpanded,
                             isLoading = uiState.isLoadingTrip,
                             errorMessage = uiState.errorMessage,
                             onDestinationChanged = viewModel::onDestinationChanged,
                             onSuggestionSelected = viewModel::selectSuggestion,
+                            onToggleResultsExpanded = viewModel::toggleDestinationResultsExpanded,
                             onStartTrip = viewModel::startTrip,
                         )
                     } else {
                         PoiPanel(
+                            isMenuOpen = uiState.isCategoryMenuOpen,
                             selectedCategories = uiState.selectedCategories,
                             loadingCategory = uiState.loadingCategory,
-                            upcomingPoisByCategory = uiState.upcomingPoisByCategory,
-                            distanceUnit = uiState.distanceUnit,
+                            onToggleMenu = viewModel::toggleCategoryMenu,
                             onToggleCategory = viewModel::toggleCategory,
                         )
                     }
@@ -200,10 +237,10 @@ fun MapScreen(viewModel: MainViewModel) {
 
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (uiState.tripActive) {
-                        NextRestStopCard(
-                            restStop = uiState.nextRestStop,
-                            distanceMeters = uiState.distanceToNextRestStopMeters,
-                            unit = uiState.distanceUnit,
+                        TripSummaryBar(
+                            etaEpochMillis = uiState.etaEpochMillis,
+                            remainingDistanceMeters = uiState.remainingDistanceMeters,
+                            distanceUnit = uiState.distanceUnit,
                         )
                     }
                     if (uiState.tripActive && uiState.errorMessage != null) {
@@ -215,6 +252,21 @@ fun MapScreen(viewModel: MainViewModel) {
                     }
                 }
             }
+        }
+
+        if (uiState.tripActive && uiState.selectedCategories.isNotEmpty()) {
+            CategoryChipsColumn(
+                selectedCategories = uiState.selectedCategories,
+                upcomingPoisByCategory = uiState.upcomingPoisByCategory,
+                expandedCategory = uiState.expandedCategoryChip,
+                currentProgressMeters = uiState.currentProgressMeters,
+                distanceUnit = uiState.distanceUnit,
+                onToggleExpanded = viewModel::toggleCategoryChipExpanded,
+                onSelectWaypoint = viewModel::setSecondaryDestination,
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 12.dp),
+            )
         }
 
         Column(
@@ -265,16 +317,4 @@ fun MapScreen(viewModel: MainViewModel) {
             }
         }
     }
-}
-
-private val ROUTE_COLOR = Color(0xFF0B3D91)
-
-@Composable
-@GoogleMapComposable
-private fun RestStopMarker(restStop: RestStop, isNext: Boolean) {
-    Marker(
-        state = MarkerState(position = restStop.location.toLatLng()),
-        title = restStop.name,
-        snippet = if (isNext) "Next stop" else "Rest stop",
-    )
 }

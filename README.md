@@ -1,20 +1,21 @@
 # Rest Stop Countdown
 
-A Kotlin + Jetpack Compose Android app that plans a route once, finds rest areas (and
-optionally fast food / coffee / gas / EV charging) along it, and then tracks progress toward
-the next rest stop purely from on-device GPS - no repeated calls to Google's APIs while driving.
+A Kotlin + Jetpack Compose Android navigation app: plan a route once, optionally layer on rest
+areas / fast food / coffee / gas / EV charging along it, and get real turn-by-turn guidance with
+an ETA - all tracked purely from on-device GPS after that one setup fetch, no repeated calls to
+Google's APIs while driving.
 
 ## Architecture
 
 ```
 app/src/main/java/com/reststop/countdown/
 ├── data/
-│   ├── model/         Plain domain models (GeoPoint, RouteInfo, RestStop, PointOfInterest, PoiCategory)
+│   ├── model/         Plain domain models (GeoPoint, RouteInfo, RouteStep, PointOfInterest, PoiCategory, PlaceSuggestion)
 │   ├── remote/         Retrofit services + DTOs for Directions API and Places API (New)
 │   └── repository/     TripRepositoryImpl - the only place that makes network calls
 ├── domain/
 │   ├── repository/     TripRepository interface (what the ViewModel depends on)
-│   └── util/            PolylineDecoder, RoutePolylineIndex, RouteSampler - all pure, local math
+│   └── util/            PolylineDecoder, RoutePolylineIndex, RouteSampler, HtmlText - all pure, local
 ├── location/            LocationTracker - FusedLocationProviderClient wrapper (one-shot + live Flow)
 ├── di/                  AppContainer - minimal hand-rolled DI (no Hilt, fewer moving build parts)
 └── ui/
@@ -22,7 +23,8 @@ app/src/main/java/com/reststop/countdown/
     ├── TripUiState.kt
     ├── theme/
     ├── screens/MapScreen.kt
-    └── components/       DestinationInputBar, NextRestStopCard, PoiPanel, PermissionRequestScreen
+    └── components/       DestinationInputBar, TurnByTurnBanner, TripSummaryBar, PoiPanel,
+                           CategoryChip, SecondaryDestinationBanner, RouteOptionsCard, ...
 ```
 
 This is MVVM with a Clean-Architecture-style split: `ui` never talks to Retrofit directly, only
@@ -30,46 +32,68 @@ to `TripRepository` (an interface) via the `MainViewModel`; `domain/util` has ze
 framework or network dependencies (aside from `android.location.Location.distanceBetween`,
 used purely as a geodesic-distance helper) so the route-math is easy to unit test.
 
+Rest areas are **not** a special case - `PoiCategory.REST_AREA` sits alongside fast food, coffee,
+gas, and EV charging as just another checkbox category, using the exact same fetch-once /
+nearest-not-yet-passed machinery as the rest. It's kept to a tight 1.5 mi lateral cutoff from the
+route (`PoiCategory.maxLateralMeters`) so a rest area several miles off the highway never counts
+as "on the way"; other categories allow a bit more since a gas station just off an exit is still
+a reasonable stop.
+
 ## Cost-optimization design (read this first)
 
-The whole point of the app is: **plan once, track locally, forever.**
+The whole point of the app is: **plan once, track locally, forever** - with two narrow,
+driver-initiated exceptions.
 
-1. **Directions API** is called exactly once, at `MainViewModel.startTrip()`, to get the route
-   polyline from the user's current GPS fix to the destination.
-2. **Places API (New) Nearby Search** is called once per "sweep": once for rest stops right
-   after the route arrives, and once more *only if* the user checks a new POI category
-   (fast food / coffee / gas / EV charging). Toggling a category off and back on does **not**
-   refetch - results are cached in `TripUiState.poiByCategory` for the life of the trip.
+1. **Directions API** is called once at `MainViewModel.startTrip()` (route + turn-by-turn steps
+   in one response), and again only if the driver deliberately sets or clears a **secondary
+   destination** (routing through a chosen POI as a waypoint) - a one-time reroute for a one-time
+   decision, not a background poll.
+2. **Places API (New) Nearby Search** is called once per category the driver checks (rest areas /
+   fast food / coffee / gas / EV charging). Toggling a category off and back on does **not**
+   refetch - results are cached in `TripUiState.poiByCategory` for the life of the trip, and are
+   locally re-projected (no network call) onto a new route if one is set via a reroute.
    - Because a single Nearby Search circle only covers a limited radius, `RouteSampler` picks a
      handful of evenly spaced points along the route (capped, e.g. 15) and a Nearby Search is
-     issued per point, all in parallel, all within that one setup sweep. This is still "one
-     fetch at trip start," just spread across a few parallel requests instead of one - the
-     alternative (a single call) isn't possible with a fixed-radius Places search.
-3. **Everything after that** - the live countdown, auto-advance, and "upcoming X" hints - is
-   computed with `RoutePolylineIndex` (a local projection of GPS points onto the cached
-   polyline) and `Location.distanceTo()` on every `FusedLocationProviderClient` update. Zero
+     issued per point, all in parallel, all within that one setup sweep.
+3. **Places API (New) Text Search** powers destination search as the user types (debounced) -
+   used instead of Autocomplete specifically because it returns each result's `location` directly,
+   so results can be pinned on the map without a separate Place Details call per suggestion.
+4. **Everything else** - the turn-by-turn banner, ETA, auto-advance, and "upcoming X" hints - is
+   computed with `RoutePolylineIndex` (a local projection of GPS points onto the cached polyline)
+   and `Location.distanceTo()`/`bearingTo()` on every `FusedLocationProviderClient` update. Zero
    network calls happen in this loop.
 
-## Live tracking & auto-advance
+## Live tracking, ETA, and turn-by-turn
 
 - `LocationTracker.observeLocationUpdates()` exposes a `Flow<Location>` from
   `FusedLocationProviderClient` (high-accuracy priority, ~3s interval / 15m min displacement -
   tune these in `LocationTracker` for your battery/precision tradeoff).
 - On every fix, `MainViewModel.handleLocationUpdate()`:
-  1. Projects the fix onto the cached route polyline (`RoutePolylineIndex.project`) to get
-     both **progress along the route** and **lateral distance from the route**.
-  2. Computes straight-line distance to the head of the rest-stop queue with
-     `Location.distanceTo()`.
-  3. Auto-advances (drops the head of the queue) if the driver is within ~250m of it **or**
-     their route progress has passed the stop's position - whichever happens first. This
-     covers both "pulled into the rest stop" and "blew past it without stopping."
-  4. Recomputes the nearest *upcoming* place per checked POI category the same way, so e.g. a
-     "Next Fast Food: McDonald's - 4.2 mi" hint can show alongside the rest stop countdown.
-  5. Finds the current position within the selected route's cached turn-by-turn `steps` (parsed
-     once from the same Directions API response, at trip setup) and computes distance to the
-     next maneuver - this drives the `TurnByTurnBanner`.
-  6. Resolves a heading for the camera: the GPS fix's own bearing when moving fast enough to
+  1. Projects the fix onto the cached route polyline (`RoutePolylineIndex.project`) to get both
+     **progress along the route** and **lateral distance from the route**.
+  2. Recomputes the 2 nearest not-yet-passed places per checked category (rest areas included),
+     surfaced as floating `CategoryChip`s over the map.
+  3. Finds the current position within the selected route's cached turn-by-turn `steps` (parsed
+     once from the same Directions API response) and computes distance to the next maneuver -
+     this drives the `TurnByTurnBanner`.
+  4. Computes remaining distance (`routeTotalDistanceMeters - progress`) and a proportional ETA
+     (remaining distance's share of the original Directions duration estimate, added to wall-clock
+     time) for the `TripSummaryBar` - an estimate, not live traffic-aware routing.
+  5. Resolves a heading for the camera: the GPS fix's own bearing when moving fast enough to
      trust it, otherwise the bearing between the last two fixes, otherwise holds steady.
+  6. If a secondary destination is active and the driver's progress has passed it, clears it -
+     the route already continues on to the real destination through the same cached steps, this
+     just drops the "via" banner.
+
+## Secondary destinations (waypoints)
+
+Tapping a result inside a `CategoryChip`'s expanded list ("Set as stop") calls
+`MainViewModel.setSecondaryDestination`, which re-fetches Directions with that place as a
+waypoint - Google returns a multi-leg route (leg 0: here → stop, leg 1: stop → real destination),
+which `TripRepositoryImpl.fetchRoute` concatenates into one continuous `steps` list and records
+where the stop leg ends (`RouteInfo.waypointArrivalDistanceMeters`). The `SecondaryDestinationBanner`
+shows while it's active and can be cancelled (rerouting straight back to the original
+destination); either way it's a single deliberate Directions call, not a repeating one.
 
 ## Driving mode
 
