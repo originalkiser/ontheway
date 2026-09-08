@@ -37,6 +37,10 @@ data class StepDto(
     @SerializedName("maneuver") val maneuver: String? = null,
     @SerializedName("distance") val distance: ValueTextDto,
     @SerializedName("start_location") val startLocation: DirectionsLatLngDto,
+    // Each step carries its own detailed polyline (follows the actual road geometry for just
+    // that segment) - much higher fidelity than the route's overall overview_polyline, which is
+    // deliberately simplified and visibly cuts corners at high zoom.
+    @SerializedName("polyline") val polyline: OverviewPolylineDto,
 )
 
 /** The legacy Directions API uses {"lat", "lng"} - distinct from Places (New)'s {"latitude", "longitude"}. */

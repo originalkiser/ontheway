@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.GpsOff
 import androidx.compose.material.icons.filled.Map
@@ -31,7 +32,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.google.android.gms.maps.CameraUpdateFactory
@@ -48,8 +51,8 @@ import com.google.maps.android.compose.rememberCameraPositionState
 import com.reststop.countdown.R
 import com.reststop.countdown.ui.MainViewModel
 import com.reststop.countdown.ui.components.CategoryChipsColumn
+import com.reststop.countdown.ui.components.CategoryFilterMenu
 import com.reststop.countdown.ui.components.DestinationInputBar
-import com.reststop.countdown.ui.components.PoiPanel
 import com.reststop.countdown.ui.components.RouteOptionsCard
 import com.reststop.countdown.ui.components.SecondaryDestinationBanner
 import com.reststop.countdown.ui.components.TripSummaryBar
@@ -74,7 +77,11 @@ fun MapScreen(viewModel: MainViewModel) {
     val cameraPositionState = rememberCameraPositionState()
     val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
+    val density = LocalDensity.current
     var followMode by remember { mutableStateOf(true) }
+    // Measured live so the corner menu and floating chips always clear the turn-by-turn/secondary
+    // destination banners above them, however tall those happen to be.
+    var topBarHeight by remember { mutableStateOf(0.dp) }
 
     // Rasterized once and reused - BitmapDescriptorFactory.fromResource() can't decode a vector
     // drawable (it uses BitmapFactory.decodeResource under the hood, raster formats only), so the
@@ -166,7 +173,12 @@ fun MapScreen(viewModel: MainViewModel) {
                 }
             }
 
-            uiState.visiblePois.forEach { poi ->
+            // Once a stop is set, showing every other category pin too just clutters the map and
+            // makes it unclear what's actually being navigated to - so only that pin renders.
+            val poisToShow = uiState.selectedWaypoint?.let { waypoint ->
+                uiState.visiblePois.filter { it.placeId == waypoint.placeId }
+            } ?: uiState.visiblePois
+            poisToShow.forEach { poi ->
                 Marker(
                     state = MarkerState(position = poi.location.toLatLng()),
                     title = poi.name,
@@ -202,7 +214,12 @@ fun MapScreen(viewModel: MainViewModel) {
         Column(modifier = Modifier.fillMaxSize()) {
             if (uiState.tripActive) {
                 Column(
-                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp)
+                        .onGloballyPositioned { coordinates ->
+                            topBarHeight = with(density) { coordinates.size.height.toDp() }
+                        },
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     TurnByTurnBanner(
@@ -240,6 +257,7 @@ fun MapScreen(viewModel: MainViewModel) {
                             routes = uiState.routeOptions,
                             distanceUnit = uiState.distanceUnit,
                             onSelectRoute = viewModel::selectRoute,
+                            onCancel = viewModel::cancelRouteSelection,
                         )
                     } else if (!uiState.tripActive) {
                         DestinationInputBar(
@@ -252,14 +270,6 @@ fun MapScreen(viewModel: MainViewModel) {
                             onSuggestionSelected = viewModel::selectSuggestion,
                             onToggleResultsExpanded = viewModel::toggleDestinationResultsExpanded,
                             onStartTrip = viewModel::startTrip,
-                        )
-                    } else {
-                        PoiPanel(
-                            isMenuOpen = uiState.isCategoryMenuOpen,
-                            selectedCategories = uiState.selectedCategories,
-                            loadingCategory = uiState.loadingCategory,
-                            onToggleMenu = viewModel::toggleCategoryMenu,
-                            onToggleCategory = viewModel::toggleCategory,
                         )
                     }
                 }
@@ -283,6 +293,21 @@ fun MapScreen(viewModel: MainViewModel) {
             }
         }
 
+        if (uiState.tripActive) {
+            // A small corner button rather than a card in the middle of the screen, so it takes
+            // no layout space when closed and never covers the map.
+            CategoryFilterMenu(
+                isMenuOpen = uiState.isCategoryMenuOpen,
+                selectedCategories = uiState.selectedCategories,
+                loadingCategory = uiState.loadingCategory,
+                onToggleMenu = viewModel::toggleCategoryMenu,
+                onToggleCategory = viewModel::toggleCategory,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(top = topBarHeight + 12.dp, start = 12.dp),
+            )
+        }
+
         if (uiState.tripActive && uiState.selectedCategories.isNotEmpty()) {
             CategoryChipsColumn(
                 selectedCategories = uiState.selectedCategories,
@@ -293,8 +318,8 @@ fun MapScreen(viewModel: MainViewModel) {
                 onToggleExpanded = viewModel::toggleCategoryChipExpanded,
                 onSelectWaypoint = viewModel::setSecondaryDestination,
                 modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .padding(end = 12.dp),
+                    .align(Alignment.TopEnd)
+                    .padding(top = topBarHeight + 12.dp, end = 12.dp),
             )
         }
 
@@ -306,6 +331,9 @@ fun MapScreen(viewModel: MainViewModel) {
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             if (uiState.tripActive) {
+                SmallFloatingActionButton(onClick = viewModel::endTrip) {
+                    Icon(imageVector = Icons.Filled.Close, contentDescription = "End trip")
+                }
                 SmallFloatingActionButton(onClick = viewModel::toggleDrivingMode) {
                     Icon(
                         imageVector = if (uiState.drivingMode) Icons.Filled.Map else Icons.Filled.Navigation,

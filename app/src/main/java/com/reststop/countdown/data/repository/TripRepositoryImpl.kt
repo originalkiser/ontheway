@@ -87,6 +87,10 @@ class TripRepositoryImpl(
 
             var cumulativeMeters = 0.0
             val steps = mutableListOf<RouteStep>()
+            // Concatenating every step's own detailed polyline (not the route's overview_polyline,
+            // which is deliberately simplified and visibly cuts corners at high zoom) traces the
+            // actual road geometry the whole way.
+            val detailedPolyline = mutableListOf<GeoPoint>()
             var waypointArrivalDistanceMeters: Double? = null
 
             route.legs.forEachIndexed { legIndex, leg ->
@@ -98,6 +102,7 @@ class TripRepositoryImpl(
                         location = GeoPoint(step.startLocation.lat, step.startLocation.lng),
                         distanceAlongRouteMeters = cumulativeMeters,
                     )
+                    detailedPolyline += PolylineDecoder.decode(step.polyline.points)
                     cumulativeMeters += step.distance.value
                 }
                 // A waypoint splits the route into 2+ legs; the end of the first leg is where
@@ -110,7 +115,7 @@ class TripRepositoryImpl(
             val finalLeg = route.legs.last()
             RouteInfo(
                 summary = route.summary.ifBlank { finalLeg.endAddress },
-                polyline = PolylineDecoder.decode(route.overviewPolyline.points),
+                polyline = detailedPolyline.ifEmpty { PolylineDecoder.decode(route.overviewPolyline.points) },
                 distanceMeters = route.legs.sumOf { it.distance.value },
                 durationSeconds = route.legs.sumOf { it.duration.value },
                 destinationAddress = finalLeg.endAddress,

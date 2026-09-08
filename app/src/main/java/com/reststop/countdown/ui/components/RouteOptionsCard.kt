@@ -15,6 +15,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.foundation.background
 import androidx.compose.ui.Alignment
@@ -43,6 +44,7 @@ fun RouteOptionsCard(
     routes: List<RouteInfo>,
     distanceUnit: DistanceUnit,
     onSelectRoute: (RouteInfo) -> Unit,
+    onCancel: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Card(
@@ -50,7 +52,24 @@ fun RouteOptionsCard(
         elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text(text = "Choose a route", style = MaterialTheme.typography.titleMedium)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(text = "Confirm destination", style = MaterialTheme.typography.titleMedium)
+                    routes.firstOrNull()?.let { route ->
+                        Text(
+                            text = route.destinationAddress,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+                TextButton(onClick = onCancel) { Text("Not right? Edit") }
+            }
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
             routes.forEachIndexed { index, route ->
                 if (index > 0) HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
                 val color = routeOptionColor(index)

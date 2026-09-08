@@ -171,12 +171,12 @@ class MainViewModel(
                     return@launch
                 }
 
-            if (routes.size == 1) {
-                proceedWithRoute(routes.first(), origin, waypoint = null)
-            } else {
-                _uiState.update {
-                    it.copy(isLoadingTrip = false, routeOptions = routes, awaitingRouteSelection = true)
-                }
+            // Always confirm before tracking starts, even when there's only one route - the
+            // driver should see exactly where they're headed (and its distance/time) and get a
+            // deliberate "Start" tap, not have the app silently commit to whatever Directions
+            // (or a mistyped/misheard address) resolved to.
+            _uiState.update {
+                it.copy(isLoadingTrip = false, routeOptions = routes, awaitingRouteSelection = true)
             }
         }
     }
@@ -188,6 +188,11 @@ class MainViewModel(
             _uiState.update { it.copy(isLoadingTrip = true, awaitingRouteSelection = false, routeOptions = emptyList()) }
             proceedWithRoute(route, origin, waypoint = null)
         }
+    }
+
+    /** "Not right? Edit" on the confirm screen - back to the destination field, nothing else disturbed. */
+    fun cancelRouteSelection() {
+        _uiState.update { it.copy(awaitingRouteSelection = false, routeOptions = emptyList()) }
     }
 
     /**
@@ -259,6 +264,21 @@ class MainViewModel(
         }
 
         if (locationJob == null) beginLocationUpdates()
+    }
+
+    /** Abandons the active trip and returns to the destination search screen. */
+    fun endTrip() {
+        locationJob?.cancel()
+        locationJob = null
+        routeIndex = null
+        routeSteps = emptyList()
+        routeTotalDistanceMeters = 0
+        routeTotalDurationSeconds = 0
+        pendingOrigin = null
+        previousLocation = null
+        originalDestinationQuery = ""
+        originalDestinationPlaceId = null
+        _uiState.update { TripUiState(hasLocationPermission = it.hasLocationPermission, initialCameraTarget = it.currentLocation ?: it.initialCameraTarget) }
     }
 
     /** Toggles a POI category checkbox, fetching it once (then caching) if newly checked. */
